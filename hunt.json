@@ -1,0 +1,92 @@
+{
+	"levels": [
+		{
+			"id": 1,
+			"question": "What has keys but no locks, space but no room, and you can enter but can't go inside?",
+			"answer": ["keyboard", "computer keyboard"],
+			"hint": "Meta",
+			"points": 100,
+			"image": null
+		},
+		{
+			"id": 2,
+			"question": "I speak without a mouth and hear without ears. I have no body, but come alive with wind. What am I?",
+			"answer": ["echo"],
+			"hint": "Sound that bounces back to you.",
+			"points": 150,
+			"image": null
+		},
+		{
+			"id": 3,
+			"question": "The more you take, the more you leave behind. What am I?",
+			"answer": ["footsteps", "steps"],
+			"hint": "Think about walking and what you create as you move.",
+			"points": 200,
+			"image": null
+		},
+		{
+			"id": 4,
+			"question": "What can travel around the world while staying in a corner?",
+			"answer": ["stamp", "postage stamp"],
+			"hint": "Something small that helps letters reach far places.",
+			"points": 250,
+			"image": null
+		},
+		{
+			"id": 5,
+			"question": "I'm tall when I'm young, and short when I'm old. What am I?",
+			"answer": ["candle"],
+			"hint": "It burns and gets smaller over time.",
+			"points": 300,
+			"image": null
+		},
+		{
+			"id": 6,
+			"question": "What has many teeth but cannot bite?",
+			"answer": ["comb", "zipper", "saw", "gear"],
+			"hint": "You might use it to fix your hair or close your jacket.",
+			"points": 350,
+			"image": null
+		},
+		{
+			"id": 7,
+			"question": "I'm not alive, but I can grow. I don't have lungs, but I need air. I don't have a mouth, but water kills me. What am I?",
+			"answer": ["fire"],
+			"hint": "It's hot and bright, and firefighters fight against it.",
+			"points": 400,
+			"image": null
+		},
+		{
+			"id": 8,
+			"question": "What gets wet while drying?",
+			"answer": ["towel"],
+			"hint": "You use it after a shower or bath.",
+			"points": 450,
+			"image": null
+		},
+		{
+			"id": 9,
+			"question": "I have cities, but no houses. I have mountains, but no trees. I have water, but no fish. What am I?",
+			"answer": ["map"],
+			"hint": "You use it for navigation and finding directions.",
+			"points": 500,
+			"image": null
+		},
+		{
+			"id": 10,
+			"question": "The final challenge: 01001000 01100101 01101100 01101100 01101111",
+			"answer": ["hello", "Hello"],
+			"hint": "This is binary code. Each group of 8 digits represents a letter.",
+			"points": 1000,
+			"image": null
+		}
+	],
+	"metadata": {
+		"title": "Cryptic Hunt Challenge",
+		"description": "A series of riddles and puzzles to test your wit and problem-solving skills",
+		"totalLevels": 10,
+		"maxPoints": 4200,
+		"difficulty": "Medium to Hard",
+		"estimatedTime": "2-4 hours"
+	}
+}

@@ -1,0 +1,50 @@
+{
+	"token": "ODgzNjc0OTc3ODcyODAxODAy.Gwkuz6.UOokCgtQIxLjFcQnfn-yhdfGBy-H_kyHeiGvbk",
+	"whitelistedChannels": ["1320448833402048512", "1320449479463272558"],
+	"database": {
+		"path": "./data/hunt.db",
+		"backup": {
+			"enabled": true,
+			"interval": 3600000,
+			"maxBackups": 5
+		}
+	},
+	"hunt": {
+		"maxTeamSize": 4,
+		"minTeamSize": 1,
+		"hintPenalty": 0.2,
+		"allowTeamSwitching": false,
+		"resetOnRestart": false
+	},
+	"leaderboard": {
+		"maxEntries": 10,
+		"updateInterval": 30000,
+		"showInactiveTeams": true
+	},
+	"admin": {
+		"roles": ["Administrator", "Hunt Master", "Event Organizer"],
+		"logLevel": "info",
+		"enableDebug": false
+	},
+	"logging": {
+		"attemptChannelId": "1397527922616696923",
+		"firstBloodChannelId": "1397528121107812362"
+	},
+	"messages": {
+		"welcomeMessage": "Welcome to the Cryptic Hunt! Use `/help` to get started.",
+		"completionMessage": "🎉 Congratulations on completing the hunt!",
+		"teamFullMessage": "This team is full (maximum 4 members)!",
+		"noPermissionMessage": "You don't have permission to use this command.",
+		"firstBloodMessage": "🩸 **FIRST BLOOD!** Team {teamName} is the first to complete Level {levelId}!"
+	},
+	"features": {
+		"enableHints": true,
+		"enableImages": true,
+		"enableTeamChat": false,
+		"enableProgressTracking": true,
+		"enableAttemptLogging": true,
+		"enableFirstBlood": true,
+		"firstBloodBonus": true,
+		"firstBloodBonusMultiplier": 0.5
+	}
+}
