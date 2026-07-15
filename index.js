@@ -1,379 +1,153 @@
 const {
 	Client,
 	GatewayIntentBits,
-	Collection,
 	EmbedBuilder,
 	SlashCommandBuilder,
-	PresenceUpdateStatus,
 	PermissionFlagsBits,
 } = require("discord.js");
 const fs = require("node:fs");
 const path = require("node:path");
 const config = require("./config.json");
-const sqlite3 = require("sqlite3").verbose();
+const Database = require("better-sqlite3");
 
-// Create a new client instance first
 const client = new Client({
 	intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
 
-// Database helper functions
-function handleDatabaseError(error) {
-	console.error("Database error:", error);
-	return null;
+function ensureDataDirectory() {
+	const dataDir = path.join(__dirname, "data");
+	if (!fs.existsSync(dataDir)) {
+		fs.mkdirSync(dataDir, { recursive: true });
+		console.log("Created data directory");
+	}
 }
 
-// Initialize database
-const db = new sqlite3.Database(
-	path.join(__dirname, "data", "hunt.db"),
-	sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
-	(err) => {
-		if (err) {
-			console.error("Database connection error:", err);
-			process.exit(1);
-		}
-		console.log("Connected to database");
-	},
-);
+ensureDataDirectory();
+const db = new Database(path.join(__dirname, "data", "hunt.db"));
 
-// Load hunt data
+// optimize performance
+db.pragma("journal_mode = WAL");
+db.pragma("synchronous = NORMAL");
+
+console.log("DB initialized");
+
+// load hunt data
 let huntData;
 try {
 	huntData = require("./hunt.json");
 } catch (error) {
-	console.error("Error loading hunt data:", error);
+	console.error("Error with hunt", error);
 	process.exit(1);
 }
 
-// Create tables if they don't exist
-db.serialize(() => {
-	db.run(`CREATE TABLE IF NOT EXISTS teams (
-        team_id TEXT PRIMARY KEY,
-        channel_id TEXT UNIQUE,
-        team_name TEXT,
-        level INTEGER DEFAULT 1,
-        points INTEGER DEFAULT 0,
-        hint_used TEXT DEFAULT '[]',
-        start_time INTEGER,
-        created_at INTEGER
-    )`);
+// create tables
+db.exec(`
+	CREATE TABLE IF NOT EXISTS teams (
+		team_id TEXT PRIMARY KEY,
+		channel_id TEXT UNIQUE,
+		team_name TEXT,
+		level INTEGER DEFAULT 1,
+		points INTEGER DEFAULT 0,
+		hint_used TEXT DEFAULT '[]',
+		start_time INTEGER,
+		created_at INTEGER
+	);
 
-	db.run(`CREATE TABLE IF NOT EXISTS team_members (
-        team_id TEXT,
-        user_id TEXT,
-        username TEXT,
-        joined_at INTEGER,
-        PRIMARY KEY (team_id, user_id),
-        FOREIGN KEY(team_id) REFERENCES teams(team_id)
-    )`);
+	CREATE TABLE IF NOT EXISTS team_members (
+		team_id TEXT,
+		user_id TEXT,
+		username TEXT,
+		joined_at INTEGER,
+		PRIMARY KEY (team_id, user_id),
+		FOREIGN KEY(team_id) REFERENCES teams(team_id)
+	);
 
-	db.run(`CREATE TABLE IF NOT EXISTS team_completed_levels (
-        team_id TEXT,
-        level_id INTEGER,
-        completed_at INTEGER,
-        points_earned INTEGER,
-        completed_by TEXT,
-        FOREIGN KEY(team_id) REFERENCES teams(team_id)
-    )`);
+	CREATE TABLE IF NOT EXISTS team_completed_levels (
+		team_id TEXT,
+		level_id INTEGER,
+		completed_at INTEGER,
+		points_earned INTEGER,
+		completed_by TEXT,
+		FOREIGN KEY(team_id) REFERENCES teams(team_id)
+	);
 
-	db.run(`CREATE TABLE IF NOT EXISTS team_attempts (
-        attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        team_id TEXT,
-        user_id TEXT,
-        username TEXT,
-        level_id INTEGER,
-        answer TEXT,
-        is_correct BOOLEAN,
-        attempted_at INTEGER,
-        FOREIGN KEY(team_id) REFERENCES teams(team_id)
-    )`);
+	CREATE TABLE IF NOT EXISTS team_attempts (
+		attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+		team_id TEXT,
+		user_id TEXT,
+		username TEXT,
+		level_id INTEGER,
+		answer TEXT,
+		is_correct BOOLEAN,
+		attempted_at INTEGER,
+		FOREIGN KEY(team_id) REFERENCES teams(team_id)
+	);
 
-	db.run(`CREATE TABLE IF NOT EXISTS first_blood (
-        level_id INTEGER PRIMARY KEY,
-        team_id TEXT,
-        team_name TEXT,
-        completed_by TEXT,
-        completed_at INTEGER,
-        FOREIGN KEY(team_id) REFERENCES teams(team_id)
-    )`);
+	CREATE TABLE IF NOT EXISTS first_blood (
+		level_id INTEGER PRIMARY KEY,
+		team_id TEXT,
+		team_name TEXT,
+		completed_by TEXT,
+		completed_at INTEGER,
+		FOREIGN KEY(team_id) REFERENCES teams(team_id)
+	);
+`);
 
-	// Keep existing tables for backward compatibility
-	db.run(`CREATE TABLE IF NOT EXISTS user_progress (
-        user_id TEXT PRIMARY KEY,
-        level INTEGER,
-        points INTEGER,
-        hint_used TEXT,
-        start_time INTEGER
-    )`);
-
-	db.run(`CREATE TABLE IF NOT EXISTS completed_levels (
-        user_id TEXT,
-        level_id INTEGER,
-        completed_at INTEGER,
-        points_earned INTEGER,
-        FOREIGN KEY(user_id) REFERENCES user_progress(user_id)
-    )`);
-
-	db.run(`CREATE TABLE IF NOT EXISTS leaderboard (
-        user_id TEXT PRIMARY KEY,
-        username TEXT,
-        points INTEGER,
-        level INTEGER,
-        start_time INTEGER,
-        last_completed INTEGER,
-        FOREIGN KEY(user_id) REFERENCES user_progress(user_id)
-    )`);
-});
-
-// Replace userProgress.get with database query
-async function getUserProgress(userId) {
-	return new Promise((resolve, reject) => {
-		db.get(
-			"SELECT * FROM user_progress WHERE user_id = ?",
-			[userId],
-			async (err, row) => {
-				if (err) reject(err);
-				if (!row) {
-					// Initialize new user
-					const newUser = {
-						level: 1,
-						points: 0,
-						hintUsed: [],
-						startTime: Date.now(),
-					};
-					await initializeUser(userId, newUser);
-					resolve(newUser);
-				} else {
-					row.hintUsed = JSON.parse(row.hint_used || "[]");
-					resolve(row);
-				}
-			},
-		);
-	});
-}
-
-// Initialize new user
-async function initializeUser(userId, data) {
-	return new Promise((resolve, reject) => {
-		db.run(
-			"INSERT INTO user_progress (user_id, level, points, hint_used, start_time) VALUES (?, ?, ?, ?, ?)",
-			[
-				userId,
-				data.level,
-				data.points,
-				JSON.stringify(data.hintUsed),
-				data.startTime,
-			],
-			(err) => {
-				if (err) reject(err);
-				resolve();
-			},
-		);
-	});
-}
-
-// Update user progress
-async function updateUserProgress(userId, data) {
-	return new Promise((resolve, reject) => {
-		db.run(
-			"UPDATE user_progress SET level = ?, points = ?, hint_used = ? WHERE user_id = ?",
-			[data.level, data.points, JSON.stringify(data.hintUsed), userId],
-			(err) => {
-				if (err) reject(err);
-				resolve();
-			},
-		);
-	});
-}
-
-// Get leaderboard
-async function getLeaderboard() {
-	return new Promise((resolve, reject) => {
-		db.all(
-			"SELECT * FROM leaderboard ORDER BY points DESC, last_completed ASC LIMIT 10",
-			[],
-			(err, rows) => {
-				if (err) reject(err);
-				resolve(rows || []);
-			},
-		);
-	});
-}
-
-// Update leaderboard entry
-async function updateLeaderboard(data) {
-	return new Promise((resolve, reject) => {
-		db.run(
-			`INSERT INTO leaderboard (user_id, username, points, level, start_time, last_completed)
-             VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(user_id) DO UPDATE SET 
-             points = ?, level = ?, last_completed = ?`,
-			[
-				data.userId,
-				data.username,
-				data.points,
-				data.level,
-				data.startTime,
-				data.lastCompleted,
-				data.points,
-				data.level,
-				data.lastCompleted,
-			],
-			(err) => {
-				if (err) reject(err);
-				resolve();
-			},
-		);
-	});
-}
-
-// Add getUserRank function
-async function getUserRank(userId) {
-	return new Promise((resolve, reject) => {
-		db.get(
-			`SELECT COUNT(*) + 1 as rank FROM leaderboard 
-             WHERE points > (SELECT points FROM leaderboard WHERE user_id = ?)`,
-			[userId],
-			(err, row) => {
-				if (err) {
-					console.error("Error getting user rank:", err);
-					resolve(null);
-					return;
-				}
-				resolve(row ? row.rank : null);
-			},
-		);
-	});
-}
-
-// Add completed levels tracking
-async function getCompletedLevels(userId) {
-	return new Promise((resolve, reject) => {
-		db.all(
-			"SELECT * FROM completed_levels WHERE user_id = ? ORDER BY completed_at ASC",
-			[userId],
-			(err, rows) => {
-				if (err) {
-					console.error("Error getting completed levels:", err);
-					resolve([]);
-					return;
-				}
-				resolve(rows || []);
-			},
-		);
-	});
-}
-
-// Add completed level recording
-async function recordCompletedLevel(
-	userId,
-	levelId,
-	completedAt,
-	pointsEarned,
-) {
-	return new Promise((resolve, reject) => {
-		db.run(
-			"INSERT INTO completed_levels (user_id, level_id, completed_at, points_earned) VALUES (?, ?, ?, ?)",
-			[userId, levelId, completedAt, pointsEarned],
-			(err) => {
-				if (err) {
-					console.error("Error recording completed level:", err);
-					resolve(false);
-					return;
-				}
-				resolve(true);
-			},
-		);
-	});
-}
+console.log("Tables verified");
 
 // Team management functions
-async function createTeam(channelId, teamName, creatorId, creatorUsername) {
-	return new Promise((resolve, reject) => {
-		const teamId = `team_${channelId}`;
-		const now = Date.now();
+function createTeam(channelId, teamName, creatorId, creatorUsername) {
+	const teamId = `team_${channelId}`;
+	const now = Date.now();
 
-		db.run(
+	const transaction = db.transaction(() => {
+		const teamStmt = db.prepare(
 			"INSERT INTO teams (team_id, channel_id, team_name, start_time, created_at) VALUES (?, ?, ?, ?, ?)",
-			[teamId, channelId, teamName, now, now],
-			(err) => {
-				if (err) {
-					reject(err);
-					return;
-				}
-
-				// Add creator as first member
-				db.run(
-					"INSERT INTO team_members (team_id, user_id, username, joined_at) VALUES (?, ?, ?, ?)",
-					[teamId, creatorId, creatorUsername, now],
-					(err) => {
-						if (err) reject(err);
-						else resolve(teamId);
-					},
-				);
-			},
 		);
-	});
-}
+		teamStmt.run(teamId, channelId, teamName, now, now);
 
-async function getTeamByChannel(channelId) {
-	return new Promise((resolve, reject) => {
-		db.get(
-			"SELECT * FROM teams WHERE channel_id = ?",
-			[channelId],
-			(err, row) => {
-				if (err) reject(err);
-				else {
-					if (row) {
-						row.hintUsed = JSON.parse(row.hint_used || "[]");
-					}
-					resolve(row);
-				}
-			},
-		);
-	});
-}
-
-async function getTeamMembers(teamId) {
-	return new Promise((resolve, reject) => {
-		db.all(
-			"SELECT * FROM team_members WHERE team_id = ? ORDER BY joined_at",
-			[teamId],
-			(err, rows) => {
-				if (err) reject(err);
-				else resolve(rows || []);
-			},
-		);
-	});
-}
-
-async function addTeamMember(teamId, userId, username) {
-	return new Promise((resolve, reject) => {
-		db.run(
+		const memberStmt = db.prepare(
 			"INSERT INTO team_members (team_id, user_id, username, joined_at) VALUES (?, ?, ?, ?)",
-			[teamId, userId, username, Date.now()],
-			(err) => {
-				if (err) reject(err);
-				else resolve();
-			},
 		);
+		memberStmt.run(teamId, creatorId, creatorUsername, now);
 	});
+
+	transaction();
+	return teamId;
 }
 
-async function updateTeamProgress(teamId, data) {
-	return new Promise((resolve, reject) => {
-		db.run(
-			"UPDATE teams SET level = ?, points = ?, hint_used = ? WHERE team_id = ?",
-			[data.level, data.points, JSON.stringify(data.hintUsed), teamId],
-			(err) => {
-				if (err) reject(err);
-				else resolve();
-			},
-		);
-	});
+function getTeamByChannel(channelId) {
+	const stmt = db.prepare("SELECT * FROM teams WHERE channel_id = ?");
+	const row = stmt.get(channelId);
+
+	if (row) {
+		row.hintUsed = JSON.parse(row.hint_used || "[]");
+	}
+	return row;
 }
 
-async function recordTeamAttempt(
+function getTeamMembers(teamId) {
+	const stmt = db.prepare(
+		"SELECT * FROM team_members WHERE team_id = ? ORDER BY joined_at",
+	);
+	return stmt.all(teamId) || [];
+}
+
+function addTeamMember(teamId, userId, username) {
+	const stmt = db.prepare(
+		"INSERT INTO team_members (team_id, user_id, username, joined_at) VALUES (?, ?, ?, ?)",
+	);
+	stmt.run(teamId, userId, username, Date.now());
+}
+
+function updateTeamProgress(teamId, data) {
+	const stmt = db.prepare(
+		"UPDATE teams SET level = ?, points = ?, hint_used = ? WHERE team_id = ?",
+	);
+	stmt.run(data.level, data.points, JSON.stringify(data.hintUsed), teamId);
+}
+
+function recordTeamAttempt(
 	teamId,
 	userId,
 	username,
@@ -381,66 +155,55 @@ async function recordTeamAttempt(
 	answer,
 	isCorrect,
 ) {
-	return new Promise((resolve, reject) => {
-		db.run(
-			"INSERT INTO team_attempts (team_id, user_id, username, level_id, answer, is_correct, attempted_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			[teamId, userId, username, levelId, answer, isCorrect, Date.now()],
-			(err) => {
-				if (err) reject(err);
-				else resolve();
-			},
-		);
-	});
+	const stmt = db.prepare(
+		"INSERT INTO team_attempts (team_id, user_id, username, level_id, answer, is_correct, attempted_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+	);
+	stmt.run(
+		teamId,
+		userId,
+		username,
+		levelId,
+		answer,
+		isCorrect ? 1 : 0,
+		Date.now(),
+	);
 }
 
-async function getTeamLeaderboard() {
-	return new Promise((resolve, reject) => {
-		db.all(
-			`SELECT t.*, 
-			(SELECT COUNT(*) FROM team_members WHERE team_id = t.team_id) as member_count,
-			(SELECT MAX(completed_at) FROM team_completed_levels WHERE team_id = t.team_id) as last_completed
-			FROM teams t 
-			ORDER BY t.points DESC, last_completed ASC LIMIT 10`,
-			[],
-			(err, rows) => {
-				if (err) reject(err);
-				else resolve(rows || []);
-			},
-		);
-	});
+function getTeamLeaderboard() {
+	const stmt = db.prepare(`
+		SELECT t.*, 
+		(SELECT COUNT(*) FROM team_members WHERE team_id = t.team_id) as member_count,
+		(SELECT MAX(completed_at) FROM team_completed_levels WHERE team_id = t.team_id) as last_completed
+		FROM teams t 
+		ORDER BY t.points DESC, last_completed ASC LIMIT 10
+	`);
+	return stmt.all() || [];
 }
 
-async function getAllTeamsProgress() {
-	return new Promise((resolve, reject) => {
-		db.all(
-			`SELECT t.*, 
-			(SELECT COUNT(*) FROM team_members WHERE team_id = t.team_id) as member_count,
-			(SELECT MAX(completed_at) FROM team_completed_levels WHERE team_id = t.team_id) as last_completed
-			FROM teams t 
-			ORDER BY t.points DESC`,
-			[],
-			(err, rows) => {
-				if (err) reject(err);
-				else resolve(rows || []);
-			},
-		);
-	});
+function getAllTeamsProgress() {
+	const stmt = db.prepare(`
+		SELECT t.*, 
+		(SELECT COUNT(*) FROM team_members WHERE team_id = t.team_id) as member_count,
+		(SELECT MAX(completed_at) FROM team_completed_levels WHERE team_id = t.team_id) as last_completed
+		FROM teams t 
+		ORDER BY t.points DESC
+	`);
+	return stmt.all() || [];
 }
 
-async function getRecentAttempts(limit = 20) {
-	return new Promise((resolve, reject) => {
-		db.all(
-			`SELECT ta.*, t.team_name, t.channel_id 
-			FROM team_attempts ta 
-			JOIN teams t ON ta.team_id = t.team_id 
-			ORDER BY ta.attempted_at DESC LIMIT ?`,
-			[limit],
-			(err, rows) => {
-				if (err) reject(err);
-				else resolve(rows || []);
-			},
-		);
-	});
+function getRecentAttempts(limit = 20) {
+	const stmt = db.prepare(`
+		SELECT ta.*, t.team_name, t.channel_id 
+		FROM team_attempts ta 
+		JOIN teams t ON ta.team_id = t.team_id 
+		ORDER BY ta.attempted_at DESC LIMIT ?
+	`);
+	return stmt.all(limit) || [];
+}
+
+function getFirstBloodStats() {
+	const stmt = db.prepare("SELECT * FROM first_blood ORDER BY level_id ASC");
+	return stmt.all() || [];
 }
 
 // Check if a channel is in the whitelist
@@ -450,135 +213,229 @@ function isWhitelistedChannel(channelId) {
 
 // Check if user has admin permissions
 function isAdmin(interaction) {
-	// Check for Administrator permission
 	if (interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
 		return true;
 	}
-
-	// Check for configured admin roles
 	const userRoles = interaction.member.roles.cache.map((role) => role.name);
 	return config.admin.roles.some((adminRole) => userRoles.includes(adminRole));
 }
 
-// Ensure data directory exists
-function ensureDataDirectory() {
-	const dataDir = path.join(__dirname, "data");
-	if (!fs.existsSync(dataDir)) {
-		fs.mkdirSync(dataDir, { recursive: true });
-		console.log("Created data directory");
+// Check if this is the first team to complete a level
+function checkFirstBlood(levelId, teamId, teamName, completedBy) {
+	const checkStmt = db.prepare("SELECT * FROM first_blood WHERE level_id = ?");
+	const existing = checkStmt.get(levelId);
+
+	if (existing) {
+		return false;
+	}
+	const insertStmt = db.prepare(
+		"INSERT INTO first_blood (level_id, team_id, team_name, completed_by, completed_at) VALUES (?, ?, ?, ?, ?)",
+	);
+	insertStmt.run(levelId, teamId, teamName, completedBy, Date.now());
+	return true;
+}
+
+// Send first blood announcement
+async function announceFirstBlood(levelId, teamName, completedBy, points) {
+	if (!config.logging.firstBloodChannelId) return;
+
+	const embed = new EmbedBuilder()
+		.setTitle("🩸 FIRST BLOOD! 🩸")
+		.setDescription(
+			`**Team ${teamName}** has taken first blood on level ${levelId}!`,
+		)
+		.setColor("#FF0000")
+		.addFields(
+			{ name: "Answered by", value: completedBy, inline: true },
+			{ name: "Points Earned", value: points.toString(), inline: true },
+			{ name: "Level", value: levelId.toString(), inline: true },
+		)
+		.setTimestamp();
+
+	try {
+		const channel = await client.channels.fetch(
+			config.logging.firstBloodChannelId,
+		);
+		if (channel?.isTextBased()) {
+			await channel.send({ embeds: [embed] });
+		}
+	} catch (error) {
+		console.error("Failed to send first blood announcement:", error);
 	}
 }
 
-// Initialize database with proper error handling
-function initializeDatabase() {
-	ensureDataDirectory();
+// Log attempt to channel
+async function logAttemptToChannel(
+	teamName,
+	username,
+	levelId,
+	answer,
+	isCorrect,
+	channelId,
+) {
+	if (!config.logging.attemptChannelId) return;
 
-	return new Promise((resolve, reject) => {
-		const dbPath = path.join(__dirname, "data", "hunt.db");
-		const database = new sqlite3.Database(
-			dbPath,
-			sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
-			(err) => {
-				if (err) {
-					console.error("Database connection error:", err);
-					reject(err);
-				} else {
-					console.log("Connected to database");
-					resolve(database);
-				}
-			},
+	const status = isCorrect ? "✅ CORRECT" : "❌ INCORRECT";
+	const color = isCorrect ? "#00FF00" : "#FF0000";
+
+	const embed = new EmbedBuilder()
+		.setTitle(`${status} Answer Attempt`)
+		.setColor(color)
+		.addFields(
+			{ name: "Team", value: teamName, inline: true },
+			{ name: "Player", value: username, inline: true },
+			{ name: "Level", value: levelId.toString(), inline: true },
+			{ name: "Answer", value: `"${answer}"`, inline: false },
+			{ name: "Channel", value: `<#${channelId}>`, inline: true },
+		)
+		.setTimestamp();
+
+	try {
+		const logChannel = await client.channels.fetch(
+			config.logging.attemptChannelId,
 		);
-	});
+		if (logChannel?.isTextBased()) {
+			await logChannel.send({ embeds: [embed] });
+		}
+	} catch (error) {
+		console.error("Failed to log attempt:", error);
+	}
 }
 
-(async () => {
+// Post level question and pin it
+async function postAndPinLevel(channelId, levelData, teamName, teamPoints) {
 	try {
-		// Create tables after successful connection
-		db.serialize(() => {
-			db.run(`CREATE TABLE IF NOT EXISTS teams (
-        team_id TEXT PRIMARY KEY,
-        channel_id TEXT UNIQUE,
-        team_name TEXT,
-        level INTEGER DEFAULT 1,
-        points INTEGER DEFAULT 0,
-        hint_used TEXT DEFAULT '[]',
-        start_time INTEGER,
-        created_at INTEGER
-    )`);
+		const channel = await client.channels.fetch(channelId);
+		if (!channel?.isTextBased()) return;
 
-			db.run(`CREATE TABLE IF NOT EXISTS team_members (
-        team_id TEXT,
-        user_id TEXT,
-        username TEXT,
-        joined_at INTEGER,
-        PRIMARY KEY (team_id, user_id),
-        FOREIGN KEY(team_id) REFERENCES teams(team_id)
-    )`);
+		// Unpin previous level messages
+		const pinnedMessages = await channel.messages.fetchPinned();
+		for (const [, message] of pinnedMessages) {
+			if (message.author.id === client.user.id && message.embeds.length > 0) {
+				const embed = message.embeds[0];
+				if (embed.title?.includes("Level") && embed.title?.includes("Team:")) {
+					await message.unpin().catch(() => {});
+				}
+			}
+		}
 
-			db.run(`CREATE TABLE IF NOT EXISTS team_completed_levels (
-        team_id TEXT,
-        level_id INTEGER,
-        completed_at INTEGER,
-        points_earned INTEGER,
-        completed_by TEXT,
-        FOREIGN KEY(team_id) REFERENCES teams(team_id)
-    )`);
+		const embed = new EmbedBuilder()
+			.setTitle(
+				`Level ${levelData.id} - ${levelData.levelname || "Unnamed Level"}`,
+			)
+			.setDescription(levelData.question)
+			.setColor("#00BFFF")
+			.addFields(
+				{
+					name: "Question Points",
+					value: levelData.points.toString(),
+					inline: true,
+				},
+				{ name: "Team Points", value: teamPoints.toString(), inline: true },
+			)
+			.setFooter({ text: "Good luck! Use /answer to submit your solution." })
+			.setTimestamp();
 
-			db.run(`CREATE TABLE IF NOT EXISTS team_attempts (
-        attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        team_id TEXT,
-        user_id TEXT,
-        username TEXT,
-        level_id INTEGER,
-        answer TEXT,
-        is_correct BOOLEAN,
-        attempted_at INTEGER,
-        FOREIGN KEY(team_id) REFERENCES teams(team_id)
-    )`);
+		if (levelData.image) {
+			embed.setImage(levelData.image);
+		}
 
-			db.run(`CREATE TABLE IF NOT EXISTS first_blood (
-        level_id INTEGER PRIMARY KEY,
-        team_id TEXT,
-        team_name TEXT,
-        completed_by TEXT,
-        completed_at INTEGER,
-        FOREIGN KEY(team_id) REFERENCES teams(team_id)
-    )`);
-
-			// Keep existing tables for backward compatibility
-			db.run(`CREATE TABLE IF NOT EXISTS user_progress (
-        user_id TEXT PRIMARY KEY,
-        level INTEGER,
-        points INTEGER,
-        hint_used TEXT,
-        start_time INTEGER
-    )`);
-
-			db.run(`CREATE TABLE IF NOT EXISTS completed_levels (
-        user_id TEXT,
-        level_id INTEGER,
-        completed_at INTEGER,
-        points_earned INTEGER,
-        FOREIGN KEY(user_id) REFERENCES user_progress(user_id)
-    )`);
-
-			db.run(`CREATE TABLE IF NOT EXISTS leaderboard (
-        user_id TEXT PRIMARY KEY,
-        username TEXT,
-        points INTEGER,
-        level INTEGER,
-        start_time INTEGER,
-        last_completed INTEGER,
-        FOREIGN KEY(user_id) REFERENCES user_progress(user_id)
-    )`);
+		const message = await channel.send({
+			content: `🚀 **You have advanced to a new level** Team ${teamName} is now on Level ${levelData.id}`,
+			embeds: [embed],
 		});
 
-		console.log("Database initialized successfully");
+		await message.pin();
+		return message;
 	} catch (error) {
-		console.error("Failed to initialize database:", error);
-		process.exit(1);
+		console.error("Error posting and pinning level:", error);
 	}
-})();
+}
+
+// Send completion celebration
+async function sendCompletionCelebration(
+	channelId,
+	teamName,
+	totalPoints,
+	completedLevels,
+	totalLevels,
+) {
+	try {
+		const channel = await client.channels.fetch(channelId);
+		if (!channel?.isTextBased()) return;
+
+		const embed = new EmbedBuilder()
+			.setTitle("🎊 HUNT COMPLETED! 🎊")
+			.setDescription(
+				`**Team ${teamName}** has successfully completed the Cryptic Hunt!`,
+			)
+			.setColor("#FFD700")
+			.addFields(
+				{
+					name: "🏆 Final Score",
+					value: `${totalPoints} points`,
+					inline: true,
+				},
+				{
+					name: "📊 Levels Completed",
+					value: `${completedLevels}/${totalLevels}`,
+					inline: true,
+				},
+			)
+			.setFooter({ text: "Congratulations" })
+			.setTimestamp();
+
+		await channel.send({
+			content: "🎉*CONGRATULATIONS!",
+			embeds: [embed],
+		});
+	} catch (error) {
+		console.error("Error sending completion celebration:", error);
+	}
+}
+
+// Send progress update
+async function sendProgressUpdate(
+	teamName,
+	levelId,
+	completedBy,
+	pointsEarned,
+	totalPoints,
+	isFirstBlood,
+) {
+	if (!config.logging.progressChannelId) return;
+
+	const embed = new EmbedBuilder()
+		.setTitle("📈 Level Completed!")
+		.setDescription(`**Team ${teamName}** has completed Level ${levelId}!`)
+		.setColor(isFirstBlood ? "#FF0000" : "#00FF00")
+		.addFields(
+			{ name: "Solved by", value: completedBy, inline: true },
+			{ name: "Points Earned", value: pointsEarned.toString(), inline: true },
+			{ name: "Total Points", value: totalPoints.toString(), inline: true },
+			{ name: "Level", value: levelId.toString(), inline: true },
+		)
+		.setTimestamp();
+
+	if (isFirstBlood) {
+		embed.addFields({
+			name: "Achievement",
+			value: "🩸 **FIRST BLOOD**",
+			inline: true,
+		});
+	}
+
+	try {
+		const channel = await client.channels.fetch(
+			config.logging.progressChannelId,
+		);
+		if (channel?.isTextBased()) {
+			await channel.send({ embeds: [embed] });
+		}
+	} catch (error) {
+		console.error("Failed to send progress update:", error);
+	}
+}
 
 // When client is ready
 client.once("ready", () => {
@@ -631,7 +488,6 @@ client.once("ready", () => {
 			.setName("previous")
 			.setDescription("View your team's previously completed questions"),
 
-		// Admin commands
 		new SlashCommandBuilder()
 			.setName("adminprogress")
 			.setDescription("View all teams' progress (Admin only)")
@@ -663,232 +519,10 @@ client.once("ready", () => {
 	console.log("Slash commands registered");
 });
 
-// Check if this is the first team to complete a level
-async function checkFirstBlood(levelId, teamId, teamName, completedBy) {
-	return new Promise((resolve, reject) => {
-		db.get(
-			"SELECT * FROM first_blood WHERE level_id = ?",
-			[levelId],
-			(err, row) => {
-				if (err) {
-					reject(err);
-					return;
-				}
-
-				if (row) {
-					// Level already has first blood
-					resolve(false);
-				} else {
-					// This is first blood! Record it
-					db.run(
-						"INSERT INTO first_blood (level_id, team_id, team_name, completed_by, completed_at) VALUES (?, ?, ?, ?, ?)",
-						[levelId, teamId, teamName, completedBy, Date.now()],
-						(err) => {
-							if (err) {
-								reject(err);
-							} else {
-								resolve(true);
-							}
-						},
-					);
-				}
-			},
-		);
-	});
-}
-
-// Send first blood announcement to first blood channel
-async function announceFirstBlood(levelId, teamName, completedBy, points) {
-	if (!config.logging.firstBloodChannelId) return;
-
-	const embed = new EmbedBuilder()
-		.setTitle("🩸 FIRST BLOOD! 🩸")
-		.setDescription(
-			`**Team ${teamName}** has taken first blood on level ${levelId}!`,
-		)
-		.setColor("#FF0000")
-		.addFields(
-			{ name: "Solved by", value: completedBy, inline: true },
-			{ name: "Points Earned", value: points.toString(), inline: true },
-			{ name: "Level", value: levelId.toString(), inline: true },
-		)
-		.setTimestamp();
-
-	try {
-		const channel = await client.channels.fetch(
-			config.logging.firstBloodChannelId,
-		);
-		if (channel?.isTextBased()) {
-			await channel.send({ embeds: [embed] });
-		}
-	} catch (error) {
-		console.error(
-			`Failed to send first blood announcement to channel ${config.logging.firstBloodChannelId}:`,
-			error,
-		);
-	}
-}
-
-// Log attempt to channel
-async function logAttemptToChannel(
-	teamName,
-	username,
-	levelId,
-	answer,
-	isCorrect,
-	channelId,
-) {
-	if (!config.logging.attemptChannelId) return;
-
-	const status = isCorrect ? "✅ CORRECT" : "❌ INCORRECT";
-	const color = isCorrect ? "#00FF00" : "#FF0000";
-
-	const embed = new EmbedBuilder()
-		.setTitle(`${status} Answer Attempt`)
-		.setColor(color)
-		.addFields(
-			{ name: "Team", value: teamName, inline: true },
-			{ name: "Player", value: username, inline: true },
-			{ name: "Level", value: levelId.toString(), inline: true },
-			{ name: "Answer", value: `"${answer}"`, inline: false },
-			{ name: "Channel", value: `<#${channelId}>`, inline: true },
-		)
-		.setTimestamp();
-
-	try {
-		const logChannel = await client.channels.fetch(
-			config.logging.attemptChannelId,
-		);
-		if (logChannel?.isTextBased()) {
-			await logChannel.send({ embeds: [embed] });
-		}
-	} catch (error) {
-		console.error(
-			`Failed to log attempt to channel ${config.logging.attemptChannelId}:`,
-			error,
-		);
-	}
-}
-
-// Get first blood statistics
-async function getFirstBloodStats() {
-	return new Promise((resolve, reject) => {
-		db.all(
-			"SELECT * FROM first_blood ORDER BY level_id ASC",
-			[],
-			(err, rows) => {
-				if (err) reject(err);
-				else resolve(rows || []);
-			},
-		);
-	});
-}
-
-// Post level question to channel and pin it
-async function postAndPinLevel(channelId, levelData, teamName, teamPoints) {
-	try {
-		const channel = await client.channels.fetch(channelId);
-		if (!channel?.isTextBased()) return;
-
-		// Unpin previous level messages
-		const pinnedMessages = await channel.messages.fetchPinned();
-		for (const [, message] of pinnedMessages) {
-			if (message.author.id === client.user.id && message.embeds.length > 0) {
-				const embed = message.embeds[0];
-				if (embed.title?.includes("Level") && embed.title?.includes("Team:")) {
-					await message.unpin().catch(() => {}); // Ignore errors
-				}
-			}
-		}
-
-		const embed = new EmbedBuilder()
-			.setTitle(`🎯 Level ${levelData.id} - Team: ${teamName}`)
-			.setDescription(levelData.question)
-			.setColor("#00BFFF")
-			.addFields(
-				{
-					name: "💰 Points Available",
-					value: levelData.points.toString(),
-					inline: true,
-				},
-				{ name: "🏆 Team Points", value: teamPoints.toString(), inline: true },
-				{
-					name: "💡 Commands",
-					value: "`/answer <solution>` • `/hint` • `/progress`",
-					inline: false,
-				},
-			)
-			.setFooter({ text: "Good luck! Use /answer to submit your solution." })
-			.setTimestamp();
-
-		if (levelData.image) {
-			embed.setImage(levelData.image);
-		}
-
-		const message = await channel.send({
-			content: `🚀 **New Level Available!** Team ${teamName} is now on Level ${levelData.id}`,
-			embeds: [embed],
-		});
-
-		await message.pin();
-		return message;
-	} catch (error) {
-		console.error("Error posting and pinning level:", error);
-	}
-}
-
-// Send completion celebration message
-async function sendCompletionCelebration(
-	channelId,
-	teamName,
-	totalPoints,
-	completedLevels,
-	totalLevels,
-) {
-	try {
-		const channel = await client.channels.fetch(channelId);
-		if (!channel?.isTextBased()) return;
-
-		const embed = new EmbedBuilder()
-			.setTitle("🎊 HUNT COMPLETED! 🎊")
-			.setDescription(
-				`**Team ${teamName}** has successfully completed the Cryptic Hunt!`,
-			)
-			.setColor("#FFD700")
-			.addFields(
-				{
-					name: "🏆 Final Score",
-					value: `${totalPoints} points`,
-					inline: true,
-				},
-				{
-					name: "📊 Levels Completed",
-					value: `${completedLevels}/${totalLevels}`,
-					inline: true,
-				},
-				{ name: "🎯 Achievement", value: "Hunt Master", inline: true },
-			)
-			.setThumbnail("https://cdn.discordapp.com/emojis/tada.png")
-			.setFooter({ text: "Congratulations on your achievement!" })
-			.setTimestamp();
-
-		await channel.send({
-			content: `🎉 **CONGRATULATIONS!** ${teamName} has conquered the Cryptic Hunt! 🏆`,
-			embeds: [embed],
-		});
-	} catch (error) {
-		console.error("Error sending completion celebration:", error);
-	}
-}
-
-// Initialize database
-initializeDatabase();
-
 // Handle interactions
 client.on("interactionCreate", async (interaction) => {
 	if (!interaction.isCommand()) return;
 
-	// Check if the command is used in a whitelisted channel
 	if (!isWhitelistedChannel(interaction.channelId)) {
 		return interaction.reply({
 			content:
@@ -907,7 +541,6 @@ client.on("interactionCreate", async (interaction) => {
 			case "createteam": {
 				const teamName = interaction.options.getString("name");
 
-				// Validate team name length
 				if (teamName.length > 50) {
 					return interaction.reply({
 						content: "Team name must be 50 characters or less.",
@@ -915,8 +548,7 @@ client.on("interactionCreate", async (interaction) => {
 					});
 				}
 
-				// Check if team already exists in this channel
-				const existingTeam = await getTeamByChannel(interaction.channelId);
+				const existingTeam = getTeamByChannel(interaction.channelId);
 				if (existingTeam) {
 					return interaction.reply({
 						content: "A team already exists in this channel!",
@@ -924,27 +556,26 @@ client.on("interactionCreate", async (interaction) => {
 					});
 				}
 
-				const teamId = await createTeam(
+				const teamId = createTeam(
 					interaction.channelId,
 					teamName,
 					userId,
 					username,
 				);
 
-				// Post the first level immediately
 				const firstLevel = huntData.levels.find((level) => level.id === 1);
 				if (firstLevel) {
 					await postAndPinLevel(interaction.channelId, firstLevel, teamName, 0);
 				}
 
 				return interaction.reply({
-					content: `🎯 Team "${teamName}" created and ready to hunt! Your first challenge has been posted above. Use \`/jointeam\` for others to join.`,
+					content: `🎯 Team "${teamName}" created and ready to hunt! Your first level has been posted above. Use \`/jointeam\` for others to join within this channel.`,
 					ephemeral: false,
 				});
 			}
 
 			case "jointeam": {
-				const team = await getTeamByChannel(interaction.channelId);
+				const team = getTeamByChannel(interaction.channelId);
 				if (!team) {
 					return interaction.reply({
 						content: "No team exists in this channel. Use `/createteam` first.",
@@ -952,7 +583,7 @@ client.on("interactionCreate", async (interaction) => {
 					});
 				}
 
-				const members = await getTeamMembers(team.team_id);
+				const members = getTeamMembers(team.team_id);
 				if (members.find((m) => m.user_id === userId)) {
 					return interaction.reply({
 						content: "You are already a member of this team!",
@@ -969,16 +600,15 @@ client.on("interactionCreate", async (interaction) => {
 					});
 				}
 
-				await addTeamMember(team.team_id, userId, username);
+				addTeamMember(team.team_id, userId, username);
 
-				// Send a welcoming message with current status
 				const currentLevel = huntData.levels.find(
 					(level) => level.id === team.level,
 				);
-				let welcomeMessage = `🎉 ${username} joined Team ${team.team_name}!`;
+				let welcomeMessage = ` ${username} joined Team ${team.team_name}!`;
 
 				if (currentLevel) {
-					welcomeMessage += ` You're currently working on Level ${team.level}. Check the pinned message above for the current challenge.`;
+					welcomeMessage += ` You're currently working on Level ${team.level}. Check the pinned message above for the current level.`;
 				}
 
 				return interaction.reply({
@@ -988,7 +618,7 @@ client.on("interactionCreate", async (interaction) => {
 			}
 
 			case "teaminfo": {
-				const team = await getTeamByChannel(interaction.channelId);
+				const team = getTeamByChannel(interaction.channelId);
 				if (!team) {
 					return interaction.reply({
 						content: "No team exists in this channel.",
@@ -996,7 +626,7 @@ client.on("interactionCreate", async (interaction) => {
 					});
 				}
 
-				const members = await getTeamMembers(team.team_id);
+				const members = getTeamMembers(team.team_id);
 				const memberList = members.map((m) => m.username).join(", ");
 
 				const embed = new EmbedBuilder()
@@ -1025,7 +655,7 @@ client.on("interactionCreate", async (interaction) => {
 					});
 				}
 
-				const allTeams = await getAllTeamsProgress();
+				const allTeams = getAllTeamsProgress();
 				if (allTeams.length === 0) {
 					return interaction.reply({
 						content: "No teams found.",
@@ -1046,7 +676,6 @@ client.on("interactionCreate", async (interaction) => {
 					})
 					.join("\n");
 
-				// Split into multiple embeds if too long
 				if (progressText.length > 4096) {
 					const chunks = progressText.match(/.{1,4000}/g) || [];
 					for (let i = 0; i < chunks.length; i++) {
@@ -1059,7 +688,17 @@ client.on("interactionCreate", async (interaction) => {
 							.setColor("#FF0000")
 							.setDescription(chunks[i]);
 
-						await interaction.reply({ embeds: [chunkEmbed], ephemeral: true });
+						if (i === 0) {
+							await interaction.reply({
+								embeds: [chunkEmbed],
+								ephemeral: true,
+							});
+						} else {
+							await interaction.followUp({
+								embeds: [chunkEmbed],
+								ephemeral: true,
+							});
+						}
 					}
 				} else {
 					embed.setDescription(progressText);
@@ -1079,7 +718,7 @@ client.on("interactionCreate", async (interaction) => {
 				}
 
 				const limit = interaction.options.getInteger("limit") || 20;
-				const attempts = await getRecentAttempts(limit);
+				const attempts = getRecentAttempts(limit);
 
 				if (attempts.length === 0) {
 					return interaction.reply({
@@ -1105,37 +744,28 @@ client.on("interactionCreate", async (interaction) => {
 			}
 
 			case "firstblood": {
-				try {
-					const firstBloodStats = await getFirstBloodStats();
-					if (firstBloodStats.length === 0) {
-						return interaction.reply({
-							content: "No first blood records yet!",
-							ephemeral: true,
-						});
-					}
-
-					const embed = new EmbedBuilder()
-						.setTitle("🩸 First Blood Hall of Fame")
-						.setColor("#FF0000")
-						.setDescription("Teams that achieved first blood on each level");
-
-					const statsText = firstBloodStats
-						.map((stat) => {
-							const completedAt = new Date(stat.completed_at).toLocaleString();
-							return `**Level ${stat.level_id}** - Team ${stat.team_name}\nSolved by: ${stat.completed_by}\nTime: ${completedAt}`;
-						})
-						.join("\n\n");
-
-					embed.setDescription(statsText);
-
-					return interaction.reply({ embeds: [embed], ephemeral: false });
-				} catch (error) {
-					console.error("Error in firstblood command:", error);
+				const firstBloodStats = getFirstBloodStats();
+				if (firstBloodStats.length === 0) {
 					return interaction.reply({
-						content: "An error occurred while fetching first blood statistics.",
+						content: "No first blood records yet!",
 						ephemeral: true,
 					});
 				}
+
+				const embed = new EmbedBuilder()
+					.setTitle("🩸 First Blood Hall of Fame")
+					.setColor("#FF0000")
+					.setDescription("Teams that achieved first blood on each level");
+
+				const statsText = firstBloodStats
+					.map((stat) => {
+						const completedAt = new Date(stat.completed_at).toLocaleString();
+						return `**Level ${stat.level_id}** - Team ${stat.team_name}\nSolved by: ${stat.completed_by}\nTime: ${completedAt}`;
+					})
+					.join("\n\n");
+
+				embed.setDescription(statsText);
+				return interaction.reply({ embeds: [embed], ephemeral: false });
 			}
 
 			case "adminfirstblood": {
@@ -1148,42 +778,32 @@ client.on("interactionCreate", async (interaction) => {
 					});
 				}
 
-				try {
-					const firstBloodStats = await getFirstBloodStats();
-					if (firstBloodStats.length === 0) {
-						return interaction.reply({
-							content: "No first blood records yet!",
-							ephemeral: true,
-						});
-					}
-
-					const embed = new EmbedBuilder()
-						.setTitle("🩸 Admin First Blood Statistics")
-						.setColor("#FF0000");
-
-					const statsText = firstBloodStats
-						.map((stat) => {
-							const completedAt = new Date(stat.completed_at);
-							const timeStr = completedAt.toLocaleString();
-							return `**Level ${stat.level_id}** - ${stat.team_name} (ID: ${stat.team_id})\nSolved by: ${stat.completed_by}\nCompleted: ${timeStr}\nTimestamp: ${stat.completed_at}`;
-						})
-						.join("\n\n");
-
-					embed.setDescription(statsText);
-
-					return interaction.reply({ embeds: [embed], ephemeral: true });
-				} catch (error) {
-					console.error("Error in adminfirstblood command:", error);
+				const firstBloodStats = getFirstBloodStats();
+				if (firstBloodStats.length === 0) {
 					return interaction.reply({
-						content: "An error occurred while fetching first blood statistics.",
+						content: "No first blood records yet!",
 						ephemeral: true,
 					});
 				}
+
+				const embed = new EmbedBuilder()
+					.setTitle("🩸 Admin First Blood Statistics")
+					.setColor("#FF0000");
+
+				const statsText = firstBloodStats
+					.map((stat) => {
+						const completedAt = new Date(stat.completed_at);
+						const timeStr = completedAt.toLocaleString();
+						return `**Level ${stat.level_id}** - ${stat.team_name} (ID: ${stat.team_id})\nSolved by: ${stat.completed_by}\nCompleted: ${timeStr}\nTimestamp: ${stat.completed_at}`;
+					})
+					.join("\n\n");
+
+				embed.setDescription(statsText);
+				return interaction.reply({ embeds: [embed], ephemeral: true });
 			}
 
-			// Modified existing commands to work with teams
 			case "hunt": {
-				const team = await getTeamByChannel(interaction.channelId);
+				const team = getTeamByChannel(interaction.channelId);
 				if (!team) {
 					return interaction.reply({
 						content: "No team exists in this channel. Use `/createteam` first.",
@@ -1191,7 +811,7 @@ client.on("interactionCreate", async (interaction) => {
 					});
 				}
 
-				const members = await getTeamMembers(team.team_id);
+				const members = getTeamMembers(team.team_id);
 				if (!members.find((m) => m.user_id === userId)) {
 					return interaction.reply({
 						content:
@@ -1210,13 +830,11 @@ client.on("interactionCreate", async (interaction) => {
 					});
 				}
 
-				// Reply to interaction immediately
 				await interaction.reply({
-					content: "📌 Reposting and pinning your current level...",
+					content: "📌 Reposting your current level...",
 					ephemeral: true,
 				});
 
-				// Repost and pin the current level as a separate action
 				await postAndPinLevel(
 					interaction.channelId,
 					currentLevel,
@@ -1224,23 +842,17 @@ client.on("interactionCreate", async (interaction) => {
 					team.points,
 				);
 
-				// Send a follow-up message
-				try {
-					const channel = await client.channels.fetch(interaction.channelId);
-					if (channel?.isTextBased()) {
-						await channel.send(
-							"📌 **Current level has been reposted and pinned above!**",
-						);
-					}
-				} catch (error) {
-					console.error("Error sending follow-up message:", error);
+				const channel = await client.channels.fetch(interaction.channelId);
+				if (channel?.isTextBased()) {
+					await channel.send(
+						"📌 **Current level has been reposted and pinned above!**",
+					);
 				}
-
 				break;
 			}
 
 			case "answer": {
-				const team = await getTeamByChannel(interaction.channelId);
+				const team = getTeamByChannel(interaction.channelId);
 				if (!team) {
 					return interaction.reply({
 						content: "No team exists in this channel.",
@@ -1248,7 +860,7 @@ client.on("interactionCreate", async (interaction) => {
 					});
 				}
 
-				const members = await getTeamMembers(team.team_id);
+				const members = getTeamMembers(team.team_id);
 				if (!members.find((m) => m.user_id === userId)) {
 					return interaction.reply({
 						content: "You are not a member of this team.",
@@ -1277,8 +889,7 @@ client.on("interactionCreate", async (interaction) => {
 
 				const isCorrect = correctAnswer.includes(answer);
 
-				// Record team attempt in database
-				await recordTeamAttempt(
+				recordTeamAttempt(
 					team.team_id,
 					userId,
 					username,
@@ -1287,8 +898,7 @@ client.on("interactionCreate", async (interaction) => {
 					isCorrect,
 				);
 
-				// Log attempt to channel
-				await logAttemptToChannel(
+				logAttemptToChannel(
 					team.team_name,
 					username,
 					currentLevel.id,
@@ -1307,48 +917,49 @@ client.on("interactionCreate", async (interaction) => {
 						);
 					}
 
-					// Check for first blood
-					const isFirstBlood = await checkFirstBlood(
-						currentLevel.id,
-						team.team_id,
-						team.team_name,
-						username,
-					);
-
-					// Add first blood bonus if enabled
-					if (isFirstBlood && config.features.firstBloodBonus) {
-						const bonusPoints = Math.floor(
-							pointsEarned * config.features.firstBloodBonusMultiplier,
+					let isFirstBlood = false;
+					try {
+						isFirstBlood = checkFirstBlood(
+							currentLevel.id,
+							team.team_id,
+							team.team_name,
+							username,
 						);
-						pointsEarned += bonusPoints;
+					} catch (error) {
+						console.error("Error checking first blood:", error);
+					}
+
+					if (isFirstBlood && config.features?.firstBloodBonus) {
+						pointsEarned += 20;
 					}
 
 					team.points += pointsEarned;
 					team.level++;
 
-					// Record completion
-					await new Promise((resolve, reject) => {
-						db.run(
-							"INSERT INTO team_completed_levels (team_id, level_id, completed_at, points_earned, completed_by) VALUES (?, ?, ?, ?, ?)",
-							[
-								team.team_id,
-								currentLevel.id,
-								Date.now(),
-								pointsEarned,
-								username,
-							],
-							(err) => {
-								if (err) reject(err);
-								else resolve();
-							},
-						);
-					});
+					const completionStmt = db.prepare(
+						"INSERT INTO team_completed_levels (team_id, level_id, completed_at, points_earned, completed_by) VALUES (?, ?, ?, ?, ?)",
+					);
+					completionStmt.run(
+						team.team_id,
+						currentLevel.id,
+						Date.now(),
+						pointsEarned,
+						username,
+					);
 
-					await updateTeamProgress(team.team_id, team);
+					updateTeamProgress(team.team_id, team);
 
-					// Send first blood announcement if this is first blood
+					sendProgressUpdate(
+						team.team_name,
+						currentLevel.id,
+						username,
+						pointsEarned,
+						team.points,
+						isFirstBlood,
+					);
+
 					if (isFirstBlood) {
-						await announceFirstBlood(
+						announceFirstBlood(
 							currentLevel.id,
 							team.team_name,
 							username,
@@ -1364,22 +975,18 @@ client.on("interactionCreate", async (interaction) => {
 
 					if (isFirstBlood) {
 						successMessage += " and achieved **FIRST BLOOD** 🩸";
-						if (config.features.firstBloodBonus) {
-							successMessage += ` (bonus points included)`;
+						if (config.features?.firstBloodBonus) {
+							successMessage += " (+20 bonus points included)";
 						}
 					}
 
 					if (nextLevel) {
 						successMessage += ` and advanced to Level ${nextLevel.id}!`;
 
-						// Reply to interaction immediately
 						await interaction.reply({
-							content:
-								successMessage +
-								"\n\n🎯 **Your next challenge is being prepared...**",
+							content: `${successMessage}\n\n🎯 **Your next level is being prepared...**`,
 						});
 
-						// Post and pin the next level as a separate message
 						await postAndPinLevel(
 							interaction.channelId,
 							nextLevel,
@@ -1387,30 +994,20 @@ client.on("interactionCreate", async (interaction) => {
 							team.points,
 						);
 
-						// Send a follow-up message
-						try {
-							const channel = await client.channels.fetch(
-								interaction.channelId,
+						const channel = await client.channels.fetch(interaction.channelId);
+						if (channel?.isTextBased()) {
+							await channel.send(
+								"📌 **Your next question has been posted and pinned above!**",
 							);
-							if (channel?.isTextBased()) {
-								await channel.send(
-									"📌 **Your next challenge has been posted and pinned above!**",
-								);
-							}
-						} catch (error) {
-							console.error("Error sending follow-up message:", error);
 						}
 					} else {
-						// Hunt completed!
 						successMessage += "! 🏆 **HUNT COMPLETED!** Congratulations!";
 
-						// Reply to interaction immediately
 						await interaction.reply({
 							content: successMessage,
 						});
 
-						// Send completion celebration as a separate message
-						await sendCompletionCelebration(
+						sendCompletionCelebration(
 							interaction.channelId,
 							team.team_name,
 							team.points,
@@ -1419,13 +1016,7 @@ client.on("interactionCreate", async (interaction) => {
 						);
 					}
 				} else {
-					// Wrong answer with encouragement
-					const wrongMessages = [
-						"❌ Not quite right. Keep thinking! 🤔",
-						"❌ That's not it, but don't give up! 💪",
-						"❌ Close, but not there yet. Try again! 🎯",
-						"❌ Incorrect, but every attempt gets you closer! 🚀",
-					];
+					const wrongMessages = ["❌ Wrong Answer", "❌ Incorrect Answer"];
 					const randomMessage =
 						wrongMessages[Math.floor(Math.random() * wrongMessages.length)];
 
@@ -1434,75 +1025,118 @@ client.on("interactionCreate", async (interaction) => {
 						ephemeral: true,
 					});
 				}
-
 				break;
 			}
 
 			case "leaderboard": {
-				try {
-					const leaderboard = await getTeamLeaderboard();
-					if (leaderboard.length === 0) {
-						return interaction.reply({
-							content: "No teams found on the leaderboard yet!",
-							ephemeral: true,
-						});
-					}
-
-					const embed = new EmbedBuilder()
-						.setTitle("🏆 Team Leaderboard")
-						.setColor("#FFD700")
-						.setDescription("Top performing teams in the hunt");
-
-					const leaderboardText = leaderboard
-						.map((team, index) => {
-							const medal =
-								index === 0
-									? "🥇"
-									: index === 1
-										? "🥈"
-										: index === 2
-											? "🥉"
-											: `${index + 1}.`;
-							const completedLevels = team.level - 1;
-							const lastActivity = team.last_completed
-								? new Date(team.last_completed).toLocaleString()
-								: "No completions yet";
-
-							return `${medal} **${team.team_name}** (${team.member_count} members)\n🎯 Level: ${completedLevels} completed | 💰 Points: ${team.points}\n⏰ Last activity: ${lastActivity}\n`;
-						})
-						.join("\n");
-
-					embed.setDescription(leaderboardText);
-					embed.setFooter({ text: "Keep hunting! 🔍" });
-
-					return interaction.reply({ embeds: [embed], ephemeral: false });
-				} catch (error) {
-					console.error("Error in leaderboard command:", error);
+				const leaderboard = getTeamLeaderboard();
+				if (leaderboard.length === 0) {
 					return interaction.reply({
-						content: "An error occurred while fetching the leaderboard.",
+						content: "No teams found on the leaderboard yet!",
 						ephemeral: true,
 					});
 				}
+
+				const embed = new EmbedBuilder()
+					.setTitle("🏆 Team Leaderboard")
+					.setColor("#FFD700")
+					.setDescription("Top performing teams in the hunt");
+
+				const leaderboardText = leaderboard
+					.map((team, index) => {
+						const medal =
+							index === 0
+								? "🥇"
+								: index === 1
+									? "🥈"
+									: index === 2
+										? "🥉"
+										: `${index + 1}.`;
+						const completedLevels = team.level - 1;
+						const lastActivity = team.last_completed
+							? new Date(team.last_completed).toLocaleString()
+							: "No completions yet";
+
+						return `${medal} **${team.team_name}** (${team.member_count} members)\n🎯 Level: ${completedLevels} completed | 💰 Points: ${team.points}\n⏰ Last activity: ${lastActivity}\n`;
+					})
+					.join("\n");
+
+				embed.setDescription(leaderboardText);
+				embed.setFooter({ text: "Keep hunting" });
+
+				return interaction.reply({ embeds: [embed], ephemeral: false });
+			}
+
+			case "hint": {
+				const team = getTeamByChannel(interaction.channelId);
+				if (!team) {
+					return interaction.reply({
+						content: "No team exists in this channel.",
+						ephemeral: true,
+					});
+				}
+
+				const members = getTeamMembers(team.team_id);
+				if (!members.find((m) => m.user_id === userId)) {
+					return interaction.reply({
+						content: "You are not a member of this team.",
+						ephemeral: true,
+					});
+				}
+
+				const currentLevel = huntData.levels.find(
+					(level) => level.id === team.level,
+				);
+				if (!currentLevel) {
+					return interaction.reply({
+						content: "Your team has completed all levels!",
+						ephemeral: true,
+					});
+				}
+
+				if (!currentLevel.hint) {
+					return interaction.reply({
+						content: "No hint available for this level. 🤷‍♂️",
+						ephemeral: true,
+					});
+				}
+
+				const alreadyUsed = team.hintUsed.includes(currentLevel.id);
+
+				if (!alreadyUsed) {
+					team.hintUsed.push(currentLevel.id);
+					updateTeamProgress(team.team_id, team);
+				}
+
+				const embed = new EmbedBuilder()
+					.setTitle(`💡 Hint for Level ${currentLevel.id}`)
+					.setColor("#FFD700")
+					.setDescription(currentLevel.hint)
+					.setFooter({
+						text: alreadyUsed
+							? "Hint already used for this level"
+							: `Using this hint reduces points by ${Math.round(config.hunt.hintPenalty * 100)}%`,
+					});
+
+				return interaction.reply({
+					embeds: [embed],
+					ephemeral: false,
+				});
 			}
 
 			case "help": {
 				const embed = new EmbedBuilder()
 					.setTitle("🎯 Cryptic Hunt - How to Play")
 					.setColor("#0099ff")
-					.setDescription(
-						"Welcome to the team-based cryptic hunt! Here's how to get started:",
-					)
+					.setDescription("Welcome to Cryptic 26! Here's how to get started:")
 					.addFields(
 						{
-							name: "🚀 Getting Started",
-							value:
-								"• Use `/createteam <name>` to create a team in this channel\n• Others can join with `/jointeam`\n• Teams can have up to " +
-								(config.hunt?.maxTeamSize || 4) +
-								" members",
+							name: "🕸️ Getting Started",
+							value: `• Use \`/createteam <name>\` to create a team in this channel\n• Others can join with \`/jointeam\`\n• Teams can have up to ${config.hunt?.maxTeamSize || 4} members`,
 							inline: false,
 						},
 						{
-							name: "🎮 Playing the Hunt",
+							name: "▶️ Actually Playing",
 							value:
 								"• Use `/hunt` to see your current challenge\n• Submit answers with `/answer <solution>`\n• Get hints with `/hint` (reduces points)\n• Check team info with `/teaminfo`",
 							inline: false,
@@ -1510,7 +1144,7 @@ client.on("interactionCreate", async (interaction) => {
 						{
 							name: "🏆 Scoring & Competition",
 							value:
-								"• Teams earn points for correct answers\n• First team to solve gets 🩸 **FIRST BLOOD**\n• Check rankings with `/leaderboard`\n• View completed levels with `/previous`",
+								"• Teams earn points for correct answers\n• First team to solve gets 🩸 **FIRST BLOOD** (and a small tiebreaker bonus)\n• Check rankings with `/leaderboard`\n• View completed levels with `/previous`",
 							inline: false,
 						},
 						{
@@ -1520,13 +1154,13 @@ client.on("interactionCreate", async (interaction) => {
 							inline: false,
 						},
 					)
-					.setFooter({ text: "Good luck hunting! 🔍" });
+					.setFooter({ text: "Keep Hunting " });
 
 				return interaction.reply({ embeds: [embed], ephemeral: true });
 			}
 
 			case "previous": {
-				const team = await getTeamByChannel(interaction.channelId);
+				const team = getTeamByChannel(interaction.channelId);
 				if (!team) {
 					return interaction.reply({
 						content: "No team exists in this channel.",
@@ -1534,7 +1168,7 @@ client.on("interactionCreate", async (interaction) => {
 					});
 				}
 
-				const members = await getTeamMembers(team.team_id);
+				const members = getTeamMembers(team.team_id);
 				if (!members.find((m) => m.user_id === userId)) {
 					return interaction.reply({
 						content: "You are not a member of this team.",
@@ -1542,17 +1176,10 @@ client.on("interactionCreate", async (interaction) => {
 					});
 				}
 
-				// Get completed levels for this team
-				const completedLevels = await new Promise((resolve, reject) => {
-					db.all(
-						"SELECT * FROM team_completed_levels WHERE team_id = ? ORDER BY completed_at ASC",
-						[team.team_id],
-						(err, rows) => {
-							if (err) reject(err);
-							else resolve(rows || []);
-						},
-					);
-				});
+				const completedStmt = db.prepare(
+					"SELECT * FROM team_completed_levels WHERE team_id = ? ORDER BY completed_at ASC",
+				);
+				const completedLevels = completedStmt.all(team.team_id) || [];
 
 				if (completedLevels.length === 0) {
 					return interaction.reply({
@@ -1575,9 +1202,8 @@ client.on("interactionCreate", async (interaction) => {
 					return `**Level ${completed.level_id}**: ${level?.question || "Question not found"}\n✅ Solved by: ${completed.completed_by}\n💰 Points earned: ${completed.points_earned}\n🕐 Completed: ${completedAt}`;
 				});
 
-				// Split into chunks if too long
 				const maxLength = 4096;
-				let currentText = levelTexts.join("\n\n");
+				const currentText = levelTexts.join("\n\n");
 
 				if (currentText.length > maxLength) {
 					const chunks = [];
@@ -1593,11 +1219,9 @@ client.on("interactionCreate", async (interaction) => {
 					}
 					if (currentChunk) chunks.push(currentChunk);
 
-					// Send first chunk as reply
 					embed.setDescription(chunks[0]);
 					await interaction.reply({ embeds: [embed], ephemeral: true });
 
-					// Send remaining chunks as follow-ups
 					for (let i = 1; i < chunks.length; i++) {
 						const followUpEmbed = new EmbedBuilder()
 							.setTitle(
@@ -1617,83 +1241,38 @@ client.on("interactionCreate", async (interaction) => {
 				}
 				break;
 			}
-
-			// ...existing code for other commands...
 		}
 	} catch (error) {
 		console.error(`Error in ${commandName} command:`, error);
 
 		if (!interaction.replied && !interaction.deferred) {
-			return interaction.reply({
-				content:
-					"An error occurred while processing your command. Please try again.",
-				ephemeral: true,
-			});
+			try {
+				await interaction.reply({
+					content:
+						"An error occurred while processing your command. Please try again.",
+					ephemeral: true,
+				});
+			} catch (replyError) {
+				console.error("Error sending error reply:", replyError);
+			}
 		}
 	}
 });
 
-// Add database backup functionality
-function backupDatabase() {
-	if (!config.database.backup.enabled) return;
-
-	const backupDir = path.join(__dirname, "data", "backups");
-	if (!fs.existsSync(backupDir)) {
-		fs.mkdirSync(backupDir, { recursive: true });
-	}
-
-	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-	const backupPath = path.join(backupDir, `hunt_backup_${timestamp}.db`);
-
-	try {
-		fs.copyFileSync(path.join(__dirname, "data", "hunt.db"), backupPath);
-		console.log(`Database backed up to ${backupPath}`);
-
-		// Clean up old backups
-		const backups = fs
-			.readdirSync(backupDir)
-			.filter((file) => file.startsWith("hunt_backup_"))
-			.sort()
-			.reverse();
-
-		if (backups.length > config.database.backup.maxBackups) {
-			const toDelete = backups.slice(config.database.backup.maxBackups);
-			// biome-ignore lint/complexity/noForEach: <explanation>
-			toDelete.forEach((file) => {
-				fs.unlinkSync(path.join(backupDir, file));
-				console.log(`Deleted old backup: ${file}`);
-			});
-		}
-	} catch (error) {
-		console.error("Failed to backup database:", error);
-	}
-}
-
-// Schedule database backups
-if (config.database.backup.enabled) {
-	setInterval(backupDatabase, config.database.backup.interval);
-}
-
-// Add cleanup function at the end
-function cleanup() {
-	console.log("Cleaning up...");
-	db.close((err) => {
-		if (err) {
-			console.error("Error closing database:", err);
-			process.exit(1);
-		}
-		console.log("Database connection closed");
-		process.exit(0);
-	});
-}
-
-// Handle shutdown signals
-process.on("SIGINT", cleanup);
-process.on("SIGTERM", cleanup);
-process.on("uncaughtException", (error) => {
-	console.error("Uncaught exception:", error);
-	cleanup();
+client.on("error", (error) => {
+	console.error("Discord client error:", error);
 });
 
-// Start the client last
+process.on("SIGINT", () => {
+	console.log("Received SIGINT, shutting down...");
+	db.close();
+	process.exit(0);
+});
+
+process.on("SIGTERM", () => {
+	console.log("Received SIGTERM, shutting down...");
+	db.close();
+	process.exit(0);
+});
+
 client.login(process.env.DISCORD_TOKEN || config.token);

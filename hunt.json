@@ -2,90 +2,92 @@
 	"levels": [
 		{
 			"id": 1,
-			"question": "What has keys but no locks, space but no room, and you can enter but can't go inside?",
-			"answer": ["keyboard", "computer keyboard"],
-			"hint": "Meta",
+			"question": "files.catbox.moe/w7cbhx.png",
+			"answer": ["heavens door", "heavensdoor"],
+			"points": 100,
+			"image": "https://files.catbox.moe/w7cbhx.png"
+		},
+		{
+			"id": 2,
+			"question": "D1T78W3K78QJYT335NHP8VHED1JPRC9EF5QQAWHDDXH6MSB3EHSQ8VVJC5KPABK3DXPJYWSFERSJYE1N6WS36D3168VKGDV16RT66DK468V3AEB264VP6DSP6MV36CHK6WWK4E9P6WVK4QVKEHJPERBNCHFP2XB4D5QJWVBG6G",
+			"answer": ["bodybuilderbeef", "beefbodybuilder"],
+			"hint": "Jeff Nippards is a science based lifter",
 			"points": 100,
 			"image": null
 		},
 		{
-			"id": 2,
-			"question": "I speak without a mouth and hear without ears. I have no body, but come alive with wind. What am I?",
-			"answer": ["echo"],
-			"hint": "Sound that bounces back to you.",
-			"points": 150,
-			"image": null
-		},
-		{
 			"id": 3,
-			"question": "The more you take, the more you leave behind. What am I?",
-			"answer": ["footsteps", "steps"],
-			"hint": "Think about walking and what you create as you move.",
-			"points": 200,
-			"image": null
+			"levelname": "black sheep",
+			"question": "irrel but answer is casesensitive files.catbox.moe/o8kqcj.png",
+			"answer": ["UCwg9IHNr0n05ebKhfDubuzQ", "UCwg9IHNr0n05ebKhfDubuzQ"],
+			"hint": "Dune",
+			"points": 100,
+			"image": "https://files.catbox.moe/o8kqcj.png"
 		},
 		{
 			"id": 4,
-			"question": "What can travel around the world while staying in a corner?",
-			"answer": ["stamp", "postage stamp"],
-			"hint": "Something small that helps letters reach far places.",
-			"points": 250,
+			"question": "https://files.catbox.moe/7lflkb.png",
+			"answer": ["skibiditoilet"],
+
+			"points": 100,
 			"image": null
 		},
 		{
 			"id": 5,
-			"question": "I'm tall when I'm young, and short when I'm old. What am I?",
-			"answer": ["candle"],
-			"hint": "It burns and gets smaller over time.",
-			"points": 300,
+			"question": "The Great Salesman of Science",
+			"answer": ["sixfeetunder"],
+			"hint": "he coined it.",
+			"points": 100,
 			"image": null
 		},
 		{
 			"id": 6,
-			"question": "What has many teeth but cannot bite?",
-			"answer": ["comb", "zipper", "saw", "gear"],
-			"hint": "You might use it to fix your hair or close your jacket.",
-			"points": 350,
-			"image": null
+			"question": "https://files.catbox.moe/ev7uxm.webp capnocapcapcapcapcapcapcapnocapnocapcap when you find bin it's from brawl stars",
+			"answer": ["w.k.b.r.l"],
+			"hint": "find the account",
+			"points": 100
 		},
 		{
 			"id": 7,
-			"question": "I'm not alive, but I can grow. I don't have lungs, but I need air. I don't have a mouth, but water kills me. What am I?",
-			"answer": ["fire"],
-			"hint": "It's hot and bright, and firefighters fight against it.",
-			"points": 400,
+			"question": "IMG_2108.mov",
+			"answer": ["ashtonhall"],
+			"points": 100,
 			"image": null
 		},
 		{
 			"id": 8,
-			"question": "What gets wet while drying?",
-			"answer": ["towel"],
-			"hint": "You use it after a shower or bath.",
-			"points": 450,
+			"question": "nodogyara https://files.catbox.moe/95efl7.pdf",
+			"answer": ["monolith"],
+			"hint": "You have id and pass , login",
+			"points": 120,
 			"image": null
 		},
 		{
 			"id": 9,
-			"question": "I have cities, but no houses. I have mountains, but no trees. I have water, but no fish. What am I?",
-			"answer": ["map"],
-			"hint": "You use it for navigation and finding directions.",
-			"points": 500,
-			"image": null
+			"question": "w kiki e do b you s love i me te?https://www.facebook.com/battleoftitans/",
+			"answer": ["dice_dies"],
+			"points": 120
 		},
 		{
 			"id": 10,
-			"question": "The final challenge: 01001000 01100101 01101100 01101100 01101111",
-			"answer": ["hello", "Hello"],
-			"hint": "This is binary code. Each group of 8 digits represents a letter.",
-			"points": 1000,
-			"image": null
+			"question": "cryptic.paradigmclub.co/q10",
+			"answer": ["furfurvalakshaxfocalorpaimonamy"],
+			"points": 120
+		},
+		{
+			"id": 11,
+			"question": "883674977872801802 whirl (19:31)",
+			"answer": [
+				"heavensdoorbodybuilderbeefUCwg9IHNr0n05ebKhfDubuzQskibiditoiletsixfeetunderw.k.b.r.lashtonhallmonolithdice_diesfurfurvalakshaxfocalorpaimonamy"
+			],
+			"points": 120
 		}
 	],
 	"metadata": {
-		"title": "Cryptic Hunt Challenge",
-		"description": "A series of riddles and puzzles to test your wit and problem-solving skills",
-		"totalLevels": 10,
-		"maxPoints": 4200,
+		"title": "Cryptic Cryptic Cryptic Sahur",
+		"description": "C Cube Sahur",
+		"totalLevels": 8,
+		"maxPoints": 820,
 		"difficulty": "Medium to Hard",
 		"estimatedTime": "2-4 hours"
 	}
