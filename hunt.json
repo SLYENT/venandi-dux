@@ -11,7 +11,6 @@
 			"id": 2,
 			"question": "D1T78W3K78QJYT335NHP8VHED1JPRC9EF5QQAWHDDXH6MSB3EHSQ8VVJC5KPABK3DXPJYWSFERSJYE1N6WS36D3168VKGDV16RT66DK468V3AEB264VP6DSP6MV36CHK6WWK4E9P6WVK4QVKEHJPERBNCHFP2XB4D5QJWVBG6G",
 			"answer": ["bodybuilderbeef", "beefbodybuilder"],
-			"hint": "Jeff Nippards is a science based lifter",
 			"points": 100,
 			"image": null
 		},
@@ -20,7 +19,6 @@
 			"levelname": "black sheep",
 			"question": "irrel but answer is casesensitive files.catbox.moe/o8kqcj.png",
 			"answer": ["UCwg9IHNr0n05ebKhfDubuzQ", "UCwg9IHNr0n05ebKhfDubuzQ"],
-			"hint": "Dune",
 			"points": 100,
 			"image": "https://files.catbox.moe/o8kqcj.png"
 		},
@@ -36,7 +34,6 @@
 			"id": 5,
 			"question": "The Great Salesman of Science",
 			"answer": ["sixfeetunder"],
-			"hint": "he coined it.",
 			"points": 100,
 			"image": null
 		},
@@ -44,7 +41,6 @@
 			"id": 6,
 			"question": "https://files.catbox.moe/ev7uxm.webp capnocapcapcapcapcapcapcapnocapnocapcap when you find bin it's from brawl stars",
 			"answer": ["w.k.b.r.l"],
-			"hint": "find the account",
 			"points": 100
 		},
 		{
@@ -58,7 +54,6 @@
 			"id": 8,
 			"question": "nodogyara https://files.catbox.moe/95efl7.pdf",
 			"answer": ["monolith"],
-			"hint": "You have id and pass , login",
 			"points": 120,
 			"image": null
 		},
@@ -79,6 +74,14 @@
 			"question": "883674977872801802 whirl (19:31)",
 			"answer": [
 				"heavensdoorbodybuilderbeefUCwg9IHNr0n05ebKhfDubuzQskibiditoiletsixfeetunderw.k.b.r.lashtonhallmonolithdice_diesfurfurvalakshaxfocalorpaimonamy"
+			],
+			"points": 120
+		},
+		{
+			"id": 12,
+			"question": "883674977872801802 whirl (19:31)",
+			"answer": [
+				"test"
 			],
 			"points": 120
 		}

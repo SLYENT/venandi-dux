@@ -8,6 +8,7 @@ const {
 const fs = require("node:fs");
 const path = require("node:path");
 const config = require("./config.json");
+const text = require("./text.json");
 const Database = require("better-sqlite3");
 
 const client = new Client({
@@ -18,7 +19,7 @@ function ensureDataDirectory() {
 	const dataDir = path.join(__dirname, "data");
 	if (!fs.existsSync(dataDir)) {
 		fs.mkdirSync(dataDir, { recursive: true });
-		console.log("Created data directory");
+		console.log(t("system.createdDataDirectory"));
 	}
 }
 
@@ -29,7 +30,7 @@ const db = new Database(path.join(__dirname, "data", "hunt.db"));
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
 
-console.log("DB initialized");
+console.log(t("system.dbInitialized"));
 
 // load hunt data
 let huntData;
@@ -39,6 +40,29 @@ try {
 	console.error("Error with hunt", error);
 	process.exit(1);
 }
+
+function formatText(template, values = {}) {
+	return String(template).replace(/\{\{(\w+)\}\}/g, (_, key) => {
+		const value = values[key];
+		return value === undefined || value === null ? "" : String(value);
+	});
+}
+
+function t(key, values = {}) {
+	const template = key.split(".").reduce((current, part) => current?.[part], text);
+	if (typeof template === "string") {
+		return formatText(template, values);
+	}
+	if (Array.isArray(template)) {
+		return template.map((item) => (typeof item === "string" ? formatText(item, values) : item));
+	}
+	return template;
+}
+
+const copy = text.messages;
+const commandText = text.commands;
+const colors = text.colors;
+const emojis = text.emojis;
 
 // create tables
 db.exec(`
@@ -93,7 +117,7 @@ db.exec(`
 	);
 `);
 
-console.log("Tables verified");
+console.log(t("system.tablesVerified"));
 
 // Team management functions
 function createTeam(channelId, teamName, creatorId, creatorUsername) {
@@ -145,6 +169,11 @@ function updateTeamProgress(teamId, data) {
 		"UPDATE teams SET level = ?, points = ?, hint_used = ? WHERE team_id = ?",
 	);
 	stmt.run(data.level, data.points, JSON.stringify(data.hintUsed), teamId);
+}
+
+function updateTeamPoints(teamId, points) {
+	const stmt = db.prepare("UPDATE teams SET points = ? WHERE team_id = ?");
+	stmt.run(points, teamId);
 }
 
 function recordTeamAttempt(
@@ -206,6 +235,89 @@ function getFirstBloodStats() {
 	return stmt.all() || [];
 }
 
+function getDiscordChannelUrl(guildId, channelId) {
+	return `https://discord.com/channels/${guildId}/${channelId}`;
+}
+
+function getDiscordMessageUrl(guildId, channelId, messageId) {
+	return `https://discord.com/channels/${guildId}/${channelId}/${messageId}`;
+}
+
+function resetHuntDatabase() {
+	const transaction = db.transaction(() => {
+		db.exec(`
+			DELETE FROM team_attempts;
+			DELETE FROM team_completed_levels;
+			DELETE FROM first_blood;
+			DELETE FROM team_members;
+			DELETE FROM teams;
+			DELETE FROM sqlite_sequence;
+		`);
+	});
+
+	transaction();
+}
+
+async function sendHintRequest({
+	team,
+	level,
+	requester,
+	requestMessage,
+	sourceChannelId,
+	sourceMessageId,
+	guildId,
+}) {
+	if (!config.logging.hintRequestChannelId) {
+		return false;
+	}
+
+	const hintChannel = await client.channels.fetch(
+		config.logging.hintRequestChannelId,
+	);
+
+	if (!hintChannel?.isTextBased()) {
+		return false;
+	}
+
+	const sourceChannelUrl = getDiscordChannelUrl(guildId, sourceChannelId);
+	const sourceMessageUrl = getDiscordMessageUrl(
+		guildId,
+		sourceChannelId,
+		sourceMessageId,
+	);
+	const pointsAfterHint = Math.floor(level.points * (1 - config.hunt.hintPenalty));
+
+	const embed = new EmbedBuilder()
+		.setTitle(t("messages.hintRequestTitle", { teamName: team.team_name }))
+		.setColor(colors.hint)
+		.setDescription(requestMessage)
+		.addFields(
+			{ name: t("messages.hintRequestTeam"), value: `${team.team_name} (${team.team_id})`, inline: true },
+			{ name: t("messages.hintRequestLevel"), value: level.id.toString(), inline: true },
+			{ name: t("messages.hintRequestRequester"), value: `${requester.tag} (<@${requester.id}>)`, inline: false },
+			{
+				name: t("messages.hintRequestSourceChannel"),
+				value: `<#${sourceChannelId}>\n[Open Channel](${sourceChannelUrl})`,
+				inline: false,
+			},
+			{
+				name: t("messages.hintRequestMessage"),
+				value: `[Open Message](${sourceMessageUrl})`,
+				inline: false,
+			},
+			{
+				name: t("messages.hintRequestCost"),
+				value: `25% penalty | ${pointsAfterHint} points remain on solve`,
+				inline: true,
+			},
+		)
+		.setFooter({ text: t("messages.hintRequestRequestedBy", { tag: requester.tag }) })
+		.setTimestamp();
+
+	await hintChannel.send({ embeds: [embed] });
+	return true;
+}
+
 // Check if a channel is in the whitelist
 function isWhitelistedChannel(channelId) {
 	return config.whitelistedChannels.includes(channelId);
@@ -240,15 +352,13 @@ async function announceFirstBlood(levelId, teamName, completedBy, points) {
 	if (!config.logging.firstBloodChannelId) return;
 
 	const embed = new EmbedBuilder()
-		.setTitle("🩸 FIRST BLOOD! 🩸")
-		.setDescription(
-			`**Team ${teamName}** has taken first blood on level ${levelId}!`,
-		)
-		.setColor("#FF0000")
+		.setTitle(`${emojis.firstBlood} FIRST BLOOD! ${emojis.firstBlood}`)
+		.setDescription(t("messages.firstBloodAnnouncementDescription", { teamName, levelId }))
+		.setColor(colors.danger)
 		.addFields(
-			{ name: "Answered by", value: completedBy, inline: true },
-			{ name: "Points Earned", value: points.toString(), inline: true },
-			{ name: "Level", value: levelId.toString(), inline: true },
+			{ name: t("messages.firstBloodAnsweredBy"), value: completedBy, inline: true },
+			{ name: t("messages.firstBloodPointsEarned"), value: points.toString(), inline: true },
+			{ name: t("messages.firstBloodLevel"), value: levelId.toString(), inline: true },
 		)
 		.setTimestamp();
 
@@ -276,17 +386,17 @@ async function logAttemptToChannel(
 	if (!config.logging.attemptChannelId) return;
 
 	const status = isCorrect ? "✅ CORRECT" : "❌ INCORRECT";
-	const color = isCorrect ? "#00FF00" : "#FF0000";
+	const color = isCorrect ? colors.success : colors.danger;
 
 	const embed = new EmbedBuilder()
-		.setTitle(`${status} Answer Attempt`)
+		.setTitle(isCorrect ? t("messages.attemptTitleCorrect") : t("messages.attemptTitleIncorrect"))
 		.setColor(color)
 		.addFields(
-			{ name: "Team", value: teamName, inline: true },
-			{ name: "Player", value: username, inline: true },
-			{ name: "Level", value: levelId.toString(), inline: true },
-			{ name: "Answer", value: `"${answer}"`, inline: false },
-			{ name: "Channel", value: `<#${channelId}>`, inline: true },
+			{ name: t("messages.attemptTeam"), value: teamName, inline: true },
+			{ name: t("messages.attemptPlayer"), value: username, inline: true },
+			{ name: t("messages.progressLevel"), value: levelId.toString(), inline: true },
+			{ name: t("messages.attemptAnswer"), value: `"${answer}"`, inline: false },
+			{ name: t("messages.attemptChannel"), value: `<#${channelId}>`, inline: true },
 		)
 		.setTimestamp();
 
@@ -320,20 +430,18 @@ async function postAndPinLevel(channelId, levelData, teamName, teamPoints) {
 		}
 
 		const embed = new EmbedBuilder()
-			.setTitle(
-				`Level ${levelData.id} - ${levelData.levelname || "Unnamed Level"}`,
-			)
+			.setTitle(t("messages.levelTitle", { levelId: levelData.id, levelName: levelData.levelname || "Unnamed Level" }))
 			.setDescription(levelData.question)
-			.setColor("#00BFFF")
+			.setColor(colors.level)
 			.addFields(
 				{
-					name: "Question Points",
+					name: t("messages.questionPoints"),
 					value: levelData.points.toString(),
 					inline: true,
 				},
-				{ name: "Team Points", value: teamPoints.toString(), inline: true },
+				{ name: t("messages.teamPoints"), value: teamPoints.toString(), inline: true },
 			)
-			.setFooter({ text: "Good luck! Use /answer to submit your solution." })
+			.setFooter({ text: t("messages.levelFooter") })
 			.setTimestamp();
 
 		if (levelData.image) {
@@ -341,7 +449,7 @@ async function postAndPinLevel(channelId, levelData, teamName, teamPoints) {
 		}
 
 		const message = await channel.send({
-			content: `🚀 **You have advanced to a new level** Team ${teamName} is now on Level ${levelData.id}`,
+			content: t("messages.levelAdvanceContent", { teamName, levelId: levelData.id }),
 			embeds: [embed],
 		});
 
@@ -365,28 +473,26 @@ async function sendCompletionCelebration(
 		if (!channel?.isTextBased()) return;
 
 		const embed = new EmbedBuilder()
-			.setTitle("🎊 HUNT COMPLETED! 🎊")
-			.setDescription(
-				`**Team ${teamName}** has successfully completed the Cryptic Hunt!`,
-			)
-			.setColor("#FFD700")
+			.setTitle(t("messages.completionTitle"))
+			.setDescription(t("messages.completionDescription", { teamName }))
+			.setColor(colors.leaderboard)
 			.addFields(
 				{
-					name: "🏆 Final Score",
+					name: t("messages.completionFinalScore"),
 					value: `${totalPoints} points`,
 					inline: true,
 				},
 				{
-					name: "📊 Levels Completed",
+					name: t("messages.completionLevelsCompleted"),
 					value: `${completedLevels}/${totalLevels}`,
 					inline: true,
 				},
 			)
-			.setFooter({ text: "Congratulations" })
+			.setFooter({ text: t("messages.completionFooter") })
 			.setTimestamp();
 
 		await channel.send({
-			content: "🎉*CONGRATULATIONS!",
+			content: `🎉*${t("messages.completion")}`,
 			embeds: [embed],
 		});
 	} catch (error) {
@@ -406,21 +512,21 @@ async function sendProgressUpdate(
 	if (!config.logging.progressChannelId) return;
 
 	const embed = new EmbedBuilder()
-		.setTitle("📈 Level Completed!")
-		.setDescription(`**Team ${teamName}** has completed Level ${levelId}!`)
-		.setColor(isFirstBlood ? "#FF0000" : "#00FF00")
+		.setTitle(t("messages.progressTitle"))
+		.setDescription(t("messages.progressDescription", { teamName, levelId }))
+		.setColor(isFirstBlood ? colors.danger : colors.success)
 		.addFields(
-			{ name: "Solved by", value: completedBy, inline: true },
-			{ name: "Points Earned", value: pointsEarned.toString(), inline: true },
-			{ name: "Total Points", value: totalPoints.toString(), inline: true },
-			{ name: "Level", value: levelId.toString(), inline: true },
+			{ name: t("messages.progressSolvedBy"), value: completedBy, inline: true },
+			{ name: t("messages.progressPointsEarned"), value: pointsEarned.toString(), inline: true },
+			{ name: t("messages.progressTotalPoints"), value: totalPoints.toString(), inline: true },
+			{ name: t("messages.progressLevel"), value: levelId.toString(), inline: true },
 		)
 		.setTimestamp();
 
 	if (isFirstBlood) {
 		embed.addFields({
-			name: "Achievement",
-			value: "🩸 **FIRST BLOOD**",
+			name: t("messages.progressAchievement"),
+			value: t("messages.progressFirstBlood"),
 			inline: true,
 		});
 	}
@@ -445,61 +551,81 @@ client.once("ready", () => {
 	const commands = [
 		new SlashCommandBuilder()
 			.setName("createteam")
-			.setDescription("Create a team for this channel")
+			.setDescription(commandText.createteam.description)
 			.addStringOption((option) =>
-				option.setName("name").setDescription("Team name").setRequired(true),
+				option
+					.setName("name")
+					.setDescription(commandText.createteam.nameOption)
+					.setRequired(true),
 			),
 
 		new SlashCommandBuilder()
 			.setName("jointeam")
-			.setDescription("Join the team in this channel"),
+			.setDescription(commandText.jointeam.description),
 
 		new SlashCommandBuilder()
 			.setName("teaminfo")
-			.setDescription("View team information"),
+			.setDescription(commandText.teaminfo.description),
 
 		new SlashCommandBuilder()
 			.setName("hunt")
-			.setDescription("Get your team's current cryptic hunt question"),
+			.setDescription(commandText.hunt.description),
 
 		new SlashCommandBuilder()
 			.setName("answer")
-			.setDescription("Submit an answer for your team's current level")
+			.setDescription(commandText.answer.description)
 			.addStringOption((option) =>
 				option
 					.setName("solution")
-					.setDescription("Your answer")
+					.setDescription(commandText.answer.solutionOption)
 					.setRequired(true),
 			),
 
 		new SlashCommandBuilder()
 			.setName("leaderboard")
-			.setDescription("View the hunt leaderboard"),
+			.setDescription(commandText.leaderboard.description),
 
 		new SlashCommandBuilder()
 			.setName("hint")
-			.setDescription("Request a hint for your team's current level"),
+			.setDescription(commandText.hint.description)
+			.addStringOption((option) =>
+				option
+					.setName("message")
+					.setDescription(commandText.hint.messageOption)
+					.setRequired(true),
+			),
+
+		new SlashCommandBuilder()
+			.setName("resethunt")
+			.setDescription(commandText.resethunt.description)
+			.addStringOption((option) =>
+				option
+					.setName("confirm")
+					.setDescription(commandText.resethunt.confirmOption)
+					.setRequired(true),
+			)
+			.setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
 		new SlashCommandBuilder()
 			.setName("help")
-			.setDescription("Get information about how to play the hunt"),
+			.setDescription(commandText.help.description),
 
 		new SlashCommandBuilder()
 			.setName("previous")
-			.setDescription("View your team's previously completed questions"),
+			.setDescription(commandText.previous.description),
 
 		new SlashCommandBuilder()
 			.setName("adminprogress")
-			.setDescription("View all teams' progress (Admin only)")
+			.setDescription(commandText.adminprogress.description)
 			.setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
 		new SlashCommandBuilder()
 			.setName("adminattempts")
-			.setDescription("View recent attempts across all teams (Admin only)")
+			.setDescription(commandText.adminattempts.description)
 			.addIntegerOption((option) =>
 				option
 					.setName("limit")
-					.setDescription("Number of attempts to show (default 20)")
+					.setDescription(commandText.adminattempts.limitOption)
 					.setMinValue(1)
 					.setMaxValue(50),
 			)
@@ -507,11 +633,47 @@ client.once("ready", () => {
 
 		new SlashCommandBuilder()
 			.setName("firstblood")
-			.setDescription("View first blood statistics"),
+			.setDescription(commandText.firstblood.description),
 
 		new SlashCommandBuilder()
 			.setName("adminfirstblood")
-			.setDescription("View detailed first blood statistics (Admin only)")
+			.setDescription(commandText.adminfirstblood.description)
+			.setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+		new SlashCommandBuilder()
+			.setName("adminaddpoints")
+			.setDescription(commandText.adminaddpoints.description)
+			.addIntegerOption((option) =>
+				option
+					.setName("points")
+					.setDescription(commandText.adminaddpoints.pointsOption)
+					.setRequired(true)
+					.setMinValue(1),
+				)
+			.addStringOption((option) =>
+				option
+					.setName("team")
+					.setDescription(commandText.adminaddpoints.teamOption)
+					.setRequired(true),
+				)
+			.setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+		new SlashCommandBuilder()
+			.setName("adminremovepoints")
+			.setDescription(commandText.adminremovepoints.description)
+			.addIntegerOption((option) =>
+				option
+					.setName("points")
+					.setDescription(commandText.adminremovepoints.pointsOption)
+					.setRequired(true)
+					.setMinValue(1),
+				)
+			.addStringOption((option) =>
+				option
+					.setName("team")
+					.setDescription(commandText.adminremovepoints.teamOption)
+					.setRequired(true),
+				)
 			.setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 	];
 
@@ -525,9 +687,7 @@ client.on("interactionCreate", async (interaction) => {
 
 	if (!isWhitelistedChannel(interaction.channelId)) {
 		return interaction.reply({
-			content:
-				config.messages.noPermissionMessage ||
-				"This command can only be used in designated channels.",
+			content: copy.commandRestricted,
 			ephemeral: true,
 		});
 	}
@@ -543,7 +703,7 @@ client.on("interactionCreate", async (interaction) => {
 
 				if (teamName.length > 50) {
 					return interaction.reply({
-						content: "Team name must be 50 characters or less.",
+						content: copy.teamNameTooLongShort,
 						ephemeral: true,
 					});
 				}
@@ -551,7 +711,7 @@ client.on("interactionCreate", async (interaction) => {
 				const existingTeam = getTeamByChannel(interaction.channelId);
 				if (existingTeam) {
 					return interaction.reply({
-						content: "A team already exists in this channel!",
+						content: copy.teamAlreadyExistsShort,
 						ephemeral: true,
 					});
 				}
@@ -569,7 +729,7 @@ client.on("interactionCreate", async (interaction) => {
 				}
 
 				return interaction.reply({
-					content: `🎯 Team "${teamName}" created and ready to hunt! Your first level has been posted above. Use \`/jointeam\` for others to join within this channel.`,
+					content: t("messages.teamCreatedMessage", { teamName }),
 					ephemeral: false,
 				});
 			}
@@ -578,7 +738,7 @@ client.on("interactionCreate", async (interaction) => {
 				const team = getTeamByChannel(interaction.channelId);
 				if (!team) {
 					return interaction.reply({
-						content: "No team exists in this channel. Use `/createteam` first.",
+						content: copy.noTeamCreate,
 						ephemeral: true,
 					});
 				}
@@ -586,16 +746,14 @@ client.on("interactionCreate", async (interaction) => {
 				const members = getTeamMembers(team.team_id);
 				if (members.find((m) => m.user_id === userId)) {
 					return interaction.reply({
-						content: "You are already a member of this team!",
+						content: copy.alreadyMemberShort,
 						ephemeral: true,
 					});
 				}
 
 				if (members.length >= config.hunt.maxTeamSize) {
 					return interaction.reply({
-						content:
-							config.messages.teamFullMessage ||
-							`This team is full (maximum ${config.hunt.maxTeamSize} members)!`,
+						content: t("messages.teamFullLong", { maxTeamSize: config.hunt.maxTeamSize }),
 						ephemeral: true,
 					});
 				}
@@ -605,10 +763,13 @@ client.on("interactionCreate", async (interaction) => {
 				const currentLevel = huntData.levels.find(
 					(level) => level.id === team.level,
 				);
-				let welcomeMessage = ` ${username} joined Team ${team.team_name}!`;
+				let welcomeMessage = t("messages.joinedTeamMessage", {
+					username,
+					teamName: team.team_name,
+				});
 
 				if (currentLevel) {
-					welcomeMessage += ` You're currently working on Level ${team.level}. Check the pinned message above for the current level.`;
+					welcomeMessage += t("messages.workingOnLevelMessage", { level: team.level });
 				}
 
 				return interaction.reply({
@@ -621,7 +782,7 @@ client.on("interactionCreate", async (interaction) => {
 				const team = getTeamByChannel(interaction.channelId);
 				if (!team) {
 					return interaction.reply({
-						content: "No team exists in this channel.",
+						content: copy.teamNotInChannel,
 						ephemeral: true,
 					});
 				}
@@ -630,14 +791,14 @@ client.on("interactionCreate", async (interaction) => {
 				const memberList = members.map((m) => m.username).join(", ");
 
 				const embed = new EmbedBuilder()
-					.setTitle(`Team: ${team.team_name}`)
-					.setColor("#0099ff")
+					.setTitle(t("messages.teamInfoTitleCustom", { teamName: team.team_name }))
+					.setColor(colors.info)
 					.addFields(
-						{ name: "Members", value: memberList || "None" },
-						{ name: "Current Level", value: team.level.toString() },
-						{ name: "Points", value: team.points.toString() },
+						{ name: t("messages.membersLabel"), value: memberList || copy.teamInfoNone },
+						{ name: t("messages.currentLevelLabel"), value: team.level.toString() },
+						{ name: t("messages.pointsLabel"), value: team.points.toString() },
 						{
-							name: "Team Size",
+							name: t("messages.teamSizeLabel"),
 							value: `${members.length}/${config.hunt.maxTeamSize}`,
 						},
 					);
@@ -648,9 +809,7 @@ client.on("interactionCreate", async (interaction) => {
 			case "adminprogress": {
 				if (!isAdmin(interaction)) {
 					return interaction.reply({
-						content:
-							config.messages.noPermissionMessage ||
-							"You don't have permission to use this command.",
+						content: copy.noPermissionCommand,
 						ephemeral: true,
 					});
 				}
@@ -658,21 +817,29 @@ client.on("interactionCreate", async (interaction) => {
 				const allTeams = getAllTeamsProgress();
 				if (allTeams.length === 0) {
 					return interaction.reply({
-						content: "No teams found.",
+						content: copy.noTeamsYet,
 						ephemeral: true,
 					});
 				}
 
 				const embed = new EmbedBuilder()
-					.setTitle("All Teams Progress")
-					.setColor("#FF0000");
+					.setTitle(t("messages.adminProgressTitle"))
+					.setColor(colors.danger);
 
 				const progressText = allTeams
 					.map((team, index) => {
 						const lastCompleted = team.last_completed
 							? new Date(team.last_completed).toLocaleString()
-							: "Never";
-						return `**${index + 1}. ${team.team_name}** (${team.member_count} members)\nLevel: ${team.level - 1} completed | Points: ${team.points}\nLast activity: ${lastCompleted}\nChannel: <#${team.channel_id}>\n`;
+							: copy.lastActivityNever;
+						return t("messages.adminProgressEntry", {
+							rank: index + 1,
+							teamName: team.team_name,
+							memberCount: team.member_count,
+							completedLevels: team.level - 1,
+							points: team.points,
+							lastActivity: lastCompleted,
+							channelId: team.channel_id,
+						});
 					})
 					.join("\n");
 
@@ -682,8 +849,8 @@ client.on("interactionCreate", async (interaction) => {
 						const chunkEmbed = new EmbedBuilder()
 							.setTitle(
 								i === 0
-									? "All Teams Progress"
-									: `All Teams Progress (${i + 1})`,
+									? copy.adminProgressTitle
+									: t("messages.adminProgressTitlePaged", { page: i + 1 }),
 							)
 							.setColor("#FF0000")
 							.setDescription(chunks[i]);
@@ -722,14 +889,14 @@ client.on("interactionCreate", async (interaction) => {
 
 				if (attempts.length === 0) {
 					return interaction.reply({
-						content: "No attempts found.",
+						content: copy.noAttemptsYet,
 						ephemeral: true,
 					});
 				}
 
 				const embed = new EmbedBuilder()
-					.setTitle(`Recent Attempts (Last ${attempts.length})`)
-					.setColor("#FFA500");
+					.setTitle(t("messages.adminAttemptsTitle", { count: attempts.length }))
+					.setColor(colors.warning);
 
 				const attemptsText = attempts
 					.map((attempt) => {
@@ -747,15 +914,15 @@ client.on("interactionCreate", async (interaction) => {
 				const firstBloodStats = getFirstBloodStats();
 				if (firstBloodStats.length === 0) {
 					return interaction.reply({
-						content: "No first blood records yet!",
+						content: copy.noFirstBloodYet,
 						ephemeral: true,
 					});
 				}
 
 				const embed = new EmbedBuilder()
-					.setTitle("🩸 First Blood Hall of Fame")
-					.setColor("#FF0000")
-					.setDescription("Teams that achieved first blood on each level");
+					.setTitle(t("messages.firstBloodHallTitle"))
+					.setColor(colors.danger)
+					.setDescription(t("messages.firstBloodHallDescription"));
 
 				const statsText = firstBloodStats
 					.map((stat) => {
@@ -771,9 +938,7 @@ client.on("interactionCreate", async (interaction) => {
 			case "adminfirstblood": {
 				if (!isAdmin(interaction)) {
 					return interaction.reply({
-						content:
-							config.messages.noPermissionMessage ||
-							"You don't have permission to use this command.",
+						content: copy.noPermissionCommand,
 						ephemeral: true,
 					});
 				}
@@ -781,14 +946,14 @@ client.on("interactionCreate", async (interaction) => {
 				const firstBloodStats = getFirstBloodStats();
 				if (firstBloodStats.length === 0) {
 					return interaction.reply({
-						content: "No first blood records yet!",
+						content: copy.noFirstBloodYet,
 						ephemeral: true,
 					});
 				}
 
 				const embed = new EmbedBuilder()
-					.setTitle("🩸 Admin First Blood Statistics")
-					.setColor("#FF0000");
+					.setTitle(t("messages.adminFirstBloodTitleCustom"))
+					.setColor(colors.danger);
 
 				const statsText = firstBloodStats
 					.map((stat) => {
@@ -802,11 +967,50 @@ client.on("interactionCreate", async (interaction) => {
 				return interaction.reply({ embeds: [embed], ephemeral: true });
 			}
 
+			case "adminaddpoints":
+			case "adminremovepoints": {
+				if (!isAdmin(interaction)) {
+					return interaction.reply({
+						content: copy.noPermissionCommand,
+						ephemeral: true,
+					});
+				}
+
+				const points = interaction.options.getInteger("points");
+				const teamQuery = interaction.options.getString("team").trim();
+				const team = db
+					.prepare("SELECT * FROM teams WHERE team_id = ? OR team_name = ?")
+					.get(teamQuery, teamQuery);
+
+				if (!team) {
+					return interaction.reply({
+						content: t("messages.noTeamFound", { teamQuery }),
+						ephemeral: true,
+					});
+				}
+
+				const delta = commandName === "adminaddpoints" ? points : -points;
+				const newPoints = Math.max(0, team.points + delta);
+				updateTeamPoints(team.team_id, newPoints);
+				team.points = newPoints;
+
+				const action = delta > 0 ? "added to" : "subtracted from";
+				return interaction.reply({
+					content: t("messages.pointsUpdatedMessage", {
+						points: Math.abs(delta),
+						action,
+						teamName: team.team_name,
+						totalPoints: team.points,
+					}),
+					ephemeral: true,
+				});
+			}
+
 			case "hunt": {
 				const team = getTeamByChannel(interaction.channelId);
 				if (!team) {
 					return interaction.reply({
-						content: "No team exists in this channel. Use `/createteam` first.",
+						content: copy.noTeamCreate,
 						ephemeral: true,
 					});
 				}
@@ -814,8 +1018,7 @@ client.on("interactionCreate", async (interaction) => {
 				const members = getTeamMembers(team.team_id);
 				if (!members.find((m) => m.user_id === userId)) {
 					return interaction.reply({
-						content:
-							"You are not a member of this team. Use `/jointeam` to join.",
+						content: copy.notMemberJoinShort,
 						ephemeral: true,
 					});
 				}
@@ -825,13 +1028,13 @@ client.on("interactionCreate", async (interaction) => {
 				);
 				if (!currentLevel) {
 					return interaction.reply({
-						content: "Your team has completed all levels! Congratulations! 🎉",
+						content: copy.levelCompletedUnknown,
 						ephemeral: true,
 					});
 				}
 
 				await interaction.reply({
-					content: "📌 Reposting your current level...",
+					content: copy.huntRepostNotice,
 					ephemeral: true,
 				});
 
@@ -845,7 +1048,7 @@ client.on("interactionCreate", async (interaction) => {
 				const channel = await client.channels.fetch(interaction.channelId);
 				if (channel?.isTextBased()) {
 					await channel.send(
-						"📌 **Current level has been reposted and pinned above!**",
+						copy.huntRepostedNotice,
 					);
 				}
 				break;
@@ -855,7 +1058,7 @@ client.on("interactionCreate", async (interaction) => {
 				const team = getTeamByChannel(interaction.channelId);
 				if (!team) {
 					return interaction.reply({
-						content: "No team exists in this channel.",
+						content: copy.teamNotInChannel,
 						ephemeral: true,
 					});
 				}
@@ -863,7 +1066,7 @@ client.on("interactionCreate", async (interaction) => {
 				const members = getTeamMembers(team.team_id);
 				if (!members.find((m) => m.user_id === userId)) {
 					return interaction.reply({
-						content: "You are not a member of this team.",
+						content: copy.notMemberShort,
 						ephemeral: true,
 					});
 				}
@@ -878,7 +1081,7 @@ client.on("interactionCreate", async (interaction) => {
 
 				if (!currentLevel) {
 					return interaction.reply({
-						content: "Your team has completed all levels!",
+						content: copy.completedAllLevels,
 						ephemeral: true,
 					});
 				}
@@ -971,20 +1174,24 @@ client.on("interactionCreate", async (interaction) => {
 						(level) => level.id === team.level,
 					);
 
-					let successMessage = `🎉 **CORRECT!** Team ${team.team_name} (solved by ${username}) earned ${pointsEarned} points`;
+					let successMessage = t("messages.successCorrect", {
+						teamName: team.team_name,
+						username,
+						pointsEarned,
+					});
 
 					if (isFirstBlood) {
-						successMessage += " and achieved **FIRST BLOOD** 🩸";
+						successMessage += t("messages.successFirstBlood");
 						if (config.features?.firstBloodBonus) {
-							successMessage += " (+20 bonus points included)";
+							successMessage += t("messages.successFirstBloodBonus");
 						}
 					}
 
 					if (nextLevel) {
-						successMessage += ` and advanced to Level ${nextLevel.id}!`;
+						successMessage += t("messages.successAdvanced", { levelId: nextLevel.id });
 
 						await interaction.reply({
-							content: `${successMessage}\n\n🎯 **Your next level is being prepared...**`,
+							content: `${successMessage}${t("messages.successNextLevel")}`,
 						});
 
 						await postAndPinLevel(
@@ -997,11 +1204,11 @@ client.on("interactionCreate", async (interaction) => {
 						const channel = await client.channels.fetch(interaction.channelId);
 						if (channel?.isTextBased()) {
 							await channel.send(
-								"📌 **Your next question has been posted and pinned above!**",
+								copy.huntRepostedNotice,
 							);
 						}
 					} else {
-						successMessage += "! 🏆 **HUNT COMPLETED!** Congratulations!";
+						successMessage += t("messages.successComplete");
 
 						await interaction.reply({
 							content: successMessage,
@@ -1016,7 +1223,7 @@ client.on("interactionCreate", async (interaction) => {
 						);
 					}
 				} else {
-					const wrongMessages = ["❌ Wrong Answer", "❌ Incorrect Answer"];
+					const wrongMessages = [copy.wrongAnswerA, copy.wrongAnswerB];
 					const randomMessage =
 						wrongMessages[Math.floor(Math.random() * wrongMessages.length)];
 
@@ -1032,37 +1239,37 @@ client.on("interactionCreate", async (interaction) => {
 				const leaderboard = getTeamLeaderboard();
 				if (leaderboard.length === 0) {
 					return interaction.reply({
-						content: "No teams found on the leaderboard yet!",
+						content: copy.leaderboardNoTeams,
 						ephemeral: true,
 					});
 				}
 
 				const embed = new EmbedBuilder()
-					.setTitle("🏆 Team Leaderboard")
-					.setColor("#FFD700")
-					.setDescription("Top performing teams in the hunt");
+					.setTitle(copy.leaderboardTitle)
+					.setColor(colors.leaderboard)
+					.setDescription(copy.leaderboardDescription);
 
 				const leaderboardText = leaderboard
 					.map((team, index) => {
 						const medal =
 							index === 0
-								? "🥇"
+								? copy.leaderboardMedalFirst
 								: index === 1
-									? "🥈"
+									? copy.leaderboardMedalSecond
 									: index === 2
-										? "🥉"
-										: `${index + 1}.`;
+										? copy.leaderboardMedalThird
+										: t("messages.leaderboardRank", { rank: index + 1 });
 						const completedLevels = team.level - 1;
 						const lastActivity = team.last_completed
 							? new Date(team.last_completed).toLocaleString()
-							: "No completions yet";
+							: copy.noCompletionsYet;
 
-						return `${medal} **${team.team_name}** (${team.member_count} members)\n🎯 Level: ${completedLevels} completed | 💰 Points: ${team.points}\n⏰ Last activity: ${lastActivity}\n`;
+						return `${medal} **${team.team_name}**\n${t("messages.leaderboardLevelLine", { completedLevels, points: team.points })}\n${t("messages.leaderboardLastActivityLine", { lastActivity })}\n`;
 					})
 					.join("\n");
 
 				embed.setDescription(leaderboardText);
-				embed.setFooter({ text: "Keep hunting" });
+				embed.setFooter({ text: copy.leaderboardFooter });
 
 				return interaction.reply({ embeds: [embed], ephemeral: false });
 			}
@@ -1071,7 +1278,7 @@ client.on("interactionCreate", async (interaction) => {
 				const team = getTeamByChannel(interaction.channelId);
 				if (!team) {
 					return interaction.reply({
-						content: "No team exists in this channel.",
+						content: copy.teamNotInChannel,
 						ephemeral: true,
 					});
 				}
@@ -1079,7 +1286,7 @@ client.on("interactionCreate", async (interaction) => {
 				const members = getTeamMembers(team.team_id);
 				if (!members.find((m) => m.user_id === userId)) {
 					return interaction.reply({
-						content: "You are not a member of this team.",
+						content: copy.notMemberShort,
 						ephemeral: true,
 					});
 				}
@@ -1089,72 +1296,115 @@ client.on("interactionCreate", async (interaction) => {
 				);
 				if (!currentLevel) {
 					return interaction.reply({
-						content: "Your team has completed all levels!",
+						content: copy.noLevelMessage || copy.levelCompletedUnknown,
 						ephemeral: true,
 					});
 				}
 
-				if (!currentLevel.hint) {
+				if (team.hintUsed.includes(currentLevel.id)) {
 					return interaction.reply({
-						content: "No hint available for this level. 🤷‍♂️",
+						content: copy.hintAlreadyUsed,
 						ephemeral: true,
 					});
 				}
 
-				const alreadyUsed = team.hintUsed.includes(currentLevel.id);
-
-				if (!alreadyUsed) {
-					team.hintUsed.push(currentLevel.id);
-					updateTeamProgress(team.team_id, team);
+				const requestMessage = interaction.options.getString("message").trim();
+				if (requestMessage.length > 1000) {
+					return interaction.reply({
+						content: copy.hintTooLong,
+						ephemeral: true,
+					});
 				}
 
-				const embed = new EmbedBuilder()
-					.setTitle(`💡 Hint for Level ${currentLevel.id}`)
-					.setColor("#FFD700")
-					.setDescription(currentLevel.hint)
-					.setFooter({
-						text: alreadyUsed
-							? "Hint already used for this level"
-							: `Using this hint reduces points by ${Math.round(config.hunt.hintPenalty * 100)}%`,
+				team.hintUsed.push(currentLevel.id);
+				updateTeamProgress(team.team_id, team);
+
+				const confirmationMessage = await interaction.reply({
+					content: `${copy.hintRequestSubmittedShort}${t("messages.hintPenaltyNotice")}`,
+					fetchReply: true,
+				});
+
+				try {
+					const requestLogged = await sendHintRequest({
+						team,
+						level: currentLevel,
+						requester: interaction.user,
+						requestMessage,
+						sourceChannelId: interaction.channelId,
+						sourceMessageId: confirmationMessage.id,
+						guildId: interaction.guildId,
 					});
+
+					if (requestLogged) {
+						break;
+					}
+				} catch (error) {
+					console.error("Failed to send hint request:", error);
+				}
+
+					team.hintUsed.pop();
+					updateTeamProgress(team.team_id, team);
+
+				return interaction.followUp({
+					content: copy.hintRequestFailedShort,
+					ephemeral: true,
+				});
+
+				break;
+			}
+
+			case "resethunt": {
+				if (!isAdmin(interaction)) {
+					return interaction.reply({
+						content: copy.noPermissionCommand,
+						ephemeral: true,
+					});
+				}
+
+				const confirm = interaction.options.getString("confirm");
+				if (confirm !== "RESET") {
+					return interaction.reply({
+						content: copy.resetConfirmShort,
+						ephemeral: true,
+					});
+				}
+
+				resetHuntDatabase();
 
 				return interaction.reply({
-					embeds: [embed],
-					ephemeral: false,
+					content: copy.resetSuccessShort,
+					ephemeral: true,
 				});
 			}
 
 			case "help": {
 				const embed = new EmbedBuilder()
-					.setTitle("🎯 Cryptic Hunt - How to Play")
-					.setColor("#0099ff")
-					.setDescription("Welcome to Cryptic 26! Here's how to get started:")
+					.setTitle(copy.helpTitleCustom)
+					.setColor(colors.info)
+					.setDescription(copy.helpIntroCustom)
 					.addFields(
 						{
-							name: "🕸️ Getting Started",
-							value: `• Use \`/createteam <name>\` to create a team in this channel\n• Others can join with \`/jointeam\`\n• Teams can have up to ${config.hunt?.maxTeamSize || 4} members`,
+							name: copy.helpSectionStarted,
+							value: t("messages.helpGettingStarted", { maxTeamSize: config.hunt?.maxTeamSize || 4 }),
 							inline: false,
 						},
 						{
-							name: "▶️ Actually Playing",
-							value:
-								"• Use `/hunt` to see your current challenge\n• Submit answers with `/answer <solution>`\n• Get hints with `/hint` (reduces points)\n• Check team info with `/teaminfo`",
+							name: copy.helpSectionPlay,
+							value: copy.helpPlaying,
 							inline: false,
 						},
 						{
-							name: "🏆 Scoring & Competition",
-							value:
-								"• Teams earn points for correct answers\n• First team to solve gets 🩸 **FIRST BLOOD** (and a small tiebreaker bonus)\n• Check rankings with `/leaderboard`\n• View completed levels with `/previous`",
+							name: copy.helpSectionScore,
+							value: copy.helpScoring,
 							inline: false,
 						},
 						{
-							name: "ℹ️ Team Commands",
-							value:
-								"• `/teaminfo` - View team details\n• `/jointeam` - Join the team in this channel\n• `/firstblood` - See first blood achievements",
+							name: copy.helpSectionTeam,
+							value: copy.helpTeamCommands,
 							inline: false,
 						},
 					)
-					.setFooter({ text: "Keep Hunting " });
+					.setFooter({ text: copy.helpFooterCustom });
 
 				return interaction.reply({ embeds: [embed], ephemeral: true });
 			}
@@ -1163,7 +1413,7 @@ client.on("interactionCreate", async (interaction) => {
 				const team = getTeamByChannel(interaction.channelId);
 				if (!team) {
 					return interaction.reply({
-						content: "No team exists in this channel.",
+						content: copy.teamNotInChannel,
 						ephemeral: true,
 					});
 				}
@@ -1171,7 +1421,7 @@ client.on("interactionCreate", async (interaction) => {
 				const members = getTeamMembers(team.team_id);
 				if (!members.find((m) => m.user_id === userId)) {
 					return interaction.reply({
-						content: "You are not a member of this team.",
+						content: copy.notMemberShort,
 						ephemeral: true,
 					});
 				}
@@ -1183,15 +1433,15 @@ client.on("interactionCreate", async (interaction) => {
 
 				if (completedLevels.length === 0) {
 					return interaction.reply({
-						content: "Your team hasn't completed any levels yet!",
+						content: copy.previousNone,
 						ephemeral: true,
 					});
 				}
 
 				const embed = new EmbedBuilder()
-					.setTitle(`📚 Completed Levels - Team ${team.team_name}`)
-					.setColor("#00FF00")
-					.setDescription("Here are the levels your team has conquered:");
+					.setTitle(t("messages.previousTitle", { teamName: team.team_name }))
+					.setColor(colors.success)
+					.setDescription(copy.previousDescription);
 
 				const levelTexts = completedLevels.map((completed) => {
 					const level = huntData.levels.find(
@@ -1200,6 +1450,7 @@ client.on("interactionCreate", async (interaction) => {
 					const completedAt = new Date(completed.completed_at).toLocaleString();
 
 					return `**Level ${completed.level_id}**: ${level?.question || "Question not found"}\n✅ Solved by: ${completed.completed_by}\n💰 Points earned: ${completed.points_earned}\n🕐 Completed: ${completedAt}`;
+					return `**Level ${completed.level_id}**: ${level?.question || copy.questionNotFound}\n${copy.solvedByLabel}: ${completed.completed_by}\n${copy.pointsEarnedLabel}: ${completed.points_earned}\n${copy.completedLabel}: ${completedAt}`;
 				});
 
 				const maxLength = 4096;
@@ -1224,10 +1475,8 @@ client.on("interactionCreate", async (interaction) => {
 
 					for (let i = 1; i < chunks.length; i++) {
 						const followUpEmbed = new EmbedBuilder()
-							.setTitle(
-								`📚 Completed Levels - Team ${team.team_name} (${i + 1})`,
-							)
-							.setColor("#00FF00")
+							.setTitle(t("messages.previousTitlePaged", { teamName: team.team_name, page: i + 1 }))
+							.setColor(colors.success)
 							.setDescription(chunks[i]);
 
 						await interaction.followUp({
