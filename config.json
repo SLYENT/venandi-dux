@@ -1,9 +1,6 @@
 {
-	"token": "ODgzNjc0OTc3ODcyODAxODAy.G0bas-.dsnMbuQqrKhENNKbonDi2P8CPnK47ZlQrdXGGI",
-	"whitelistedChannels": [
-		"1527000620429606942",
-		"1527712385618415616"
-	],
+	"token": "",
+	"whitelistedChannels": [],
 	"database": {
 		"path": "./data/hunt.db",
 		"backup": {
@@ -30,17 +27,10 @@
 		"enableDebug": false
 	},
 	"logging": {
-		"attemptChannelId": "1527008494232928416",
-		"hintRequestChannelId": "1529491542816063578",
-		"firstBloodChannelId": "1526996100828106963",
-		"progressChannelId": "1527008662453883023"
-	},
-	"messages": {
-		"welcomeMessage": "Every hunt begins with a choice, and every choice demands its price. Enter now. If wisdom escapes you, invoke `/help`.",
-		"completionMessage": "And so the circle closes. Congrats",
-		"teamFullMessage": "This fellowship may bear no greater burden. Four is the measure. No fifth shall enter!",
-		"noPermissionMessage": "The path before you is not yours to tread",
-		"firstBloodMessage": "🩸 **FIRST BLOOD!** Team {teamName} reaps {levelId}!"
+		"attemptChannelId": "",
+		"hintRequestChannelId": "",
+		"firstBloodChannelId": "",
+		"progressChannelId": ""
 	},
 	"features": {
 		"enableHints": true,
