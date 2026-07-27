@@ -1,5 +1,4 @@
 node_modules/
-data/
 config.json.old
-package-log.json
-data
+data/
+package-lock.json
